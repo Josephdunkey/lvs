@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "longvideostudio"
+version = "0.1.0"
+description = "LongVideoStudio —— 把长视频拍摄稿逐分镜变成成片（CLI: lvs）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+# 一期：配音 + 检索 + 素材库
+tts = ["edge-tts>=6.1"]
+http = ["requests>=2.31"]
+# 二期：本地 TTS 字幕强制对齐
+align = ["faster-whisper>=1.0"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+lvs = "lvs.cli:main"
+
+[tool.setuptools]
+packages = ["lvs"]

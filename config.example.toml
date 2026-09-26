@@ -1,0 +1,31 @@
+# LongVideoStudio 配置模板
+#
+# 用法：复制本文件为同目录下的 `config.toml`，填入你的密钥。
+#   copy config.example.toml config.toml      (Windows)
+# `config.toml` 已在 .gitignore 中，不会进版本库。
+
+[app]
+# 拆镜 / 提示词用的 LLM（沿用 MoneyPrinterTurbo 的 OpenAI 兼容接口约定）
+llm_provider = "openai"
+openai_api_key = ""                              # ← 必填：你的 DeepSeek / OpenAI key
+openai_base_url = "https://api.deepseek.com/v1"
+openai_model_name = "deepseek-chat"
+
+[pexels]
+api_key = ""                                     # ← 用 pexels 素材时必填
+
+[tts]
+# backend: edge（一期，免费联网） | openai_speech（二期，指向本地 Qwen3-TTS）
+backend = "edge"
+voice = "zh-CN-YunxiNeural"                      # edge 音色名
+base_url = "http://127.0.0.1:8000"               # backend=openai_speech 时的服务地址
+
+[library]
+# 本地素材库（可后续指定）。为空列表 = 关闭"翻库优先"功能，流程照常。
+# 例：dirs = ["D:\\素材库", "E:\\已下载"]
+dirs = []
+recursive = true
+min_score = 1                                    # 关键词命中阈值
+
+[comfyui]
+base_url = "http://127.0.0.1:8188"               # 本地生图宿主（二期）
