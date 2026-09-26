@@ -27,8 +27,8 @@ python -m lvs --help
 
 | 命令 | 阶段 | 状态 |
 |---|---|---|
-| `lvs doctor` | 环境体检 | ✅ 已实现 |
-| `lvs parse <script.md>` | 解析拍摄稿 → `parse.json` | 待做（票据 04/05） |
+| `lvs doctor` | 环境体检 | ✅ 已实现（票据 01） |
+| `lvs parse <script.md>` | 解析拍摄稿 → `parse.json` | ✅ 已实现（票据 04/05） |
 | `lvs shots` | LLM 拆镜 + 提示词 → `shots.json` | 待做（票据 06/07/08） |
 | `lvs assets` | 素材获取（本地素材库 → Pexels / 本地生图） | 待做（票据 09/18/19） |
 | `lvs voice` | 逐镜配音 + 字幕 | 待做（票据 10/11/12） |

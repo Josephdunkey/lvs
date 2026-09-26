@@ -4,9 +4,10 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done (2026-02-14)
 
-- [ ] `lvs doctor` 逐项打印检查结果（通过 / 缺失 / 警告）
+- [x] `lvs doctor` 逐项打印检查结果（通过 / 缺失 / 警告）
 - [ ] ffmpeg 缺失时给出可直接照做的安装步骤，装好后 `ffmpeg -version` 可用且 doctor 显示通过
-- [ ] 打印 NVIDIA 驱动版本与当前可用显存
-- [ ] 检查过程静默降级：某项无法检测时不崩溃、不误报通过
+      —— 安装步骤已给出并实测打印；"装好后转通过"待在真机装 ffmpeg 后回归（当前机器未装）
+- [x] 打印 NVIDIA 驱动版本与当前可用显存
+- [x] 检查过程静默降级：某项无法检测时不崩溃、不误报通过

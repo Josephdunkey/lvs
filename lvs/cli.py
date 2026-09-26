@@ -115,7 +115,12 @@ def _resolve_task(args: argparse.Namespace) -> str:
 
 
 def _dispatch(args: argparse.Namespace, config: Config, ws: Workspace) -> int:
-    """把命令路由到对应实现。本轮只有 doctor 已实现。"""
+    """把命令路由到对应实现。未实现的命令给出占位提示。"""
+    if args.command == "parse":
+        from lvs import parse as parse_mod
+
+        return parse_mod.run_command(config, ws, args)
+
     issues = _STAGE_ISSUES.get(args.command, "?")
     print(f"`lvs {args.command}` 尚未实现（对应票据 {issues}）。")
     print(f"  任务目录已就绪：{ws.dir}")

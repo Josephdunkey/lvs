@@ -4,10 +4,10 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done (2026-02-14)
 
-- [ ] `lvs --help` 列出全部子命令，每个子命令有 `--help`
-- [ ] `--task` 生效，`.work/<task>/` 自动创建
-- [ ] 配置文件缺失或字段缺失时，报错信息指出具体是哪个字段、去哪填
-- [ ] `.work/` 已加入 `.gitignore`，`git status` 不显示运行产物
-- [ ] 任务目录结构符合 spec §6 的约定
+- [x] `lvs --help` 列出全部子命令，每个子命令有 `--help`
+- [x] `--task` 生效，`.work/<task>/` 自动创建
+- [x] 配置文件缺失或字段缺失时，报错信息指出具体是哪个字段、去哪填
+- [x] `.work/` 已加入 `.gitignore`，`git status` 不显示运行产物
+- [x] 任务目录结构符合 spec §6 的约定
