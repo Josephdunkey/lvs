@@ -121,6 +121,11 @@ def _dispatch(args: argparse.Namespace, config: Config, ws: Workspace) -> int:
 
         return parse_mod.run_command(config, ws, args)
 
+    if args.command == "library":
+        from lvs import library as library_mod
+
+        return library_mod.run_command(config, ws, args)
+
     issues = _STAGE_ISSUES.get(args.command, "?")
     print(f"`lvs {args.command}` 尚未实现（对应票据 {issues}）。")
     print(f"  任务目录已就绪：{ws.dir}")

@@ -34,7 +34,7 @@ python -m lvs --help
 | `lvs voice` | 逐镜配音 + 字幕 | 待做（票据 10/11/12） |
 | `lvs build` | ffmpeg 合成 → `final.mp4` | 待做（票据 13/14/15） |
 | `lvs run <script.md>` | 一键串起全部阶段 | 待做（票据 16） |
-| `lvs library index` | 本地素材库扫描建索引 | 待做（票据 18） |
+| `lvs library index` | 本地素材库扫描建索引 | ◐ 索引/检索已实现（票据 18）；`lvs assets` 内的命中接入待票据 09 |
 
 每个子命令都支持 `--task <name>`，本次运行的产物落在 `.work/<name>/`。
 

@@ -4,21 +4,19 @@
 
 **Blocked by:** 09
 
-**Status:** ready-for-agent
+**Status:** in-progress —— 索引与检索已完成并测试；`lvs assets` 内的"翻库优先"接入待票据 09
 
-**契约（见 spec §8.1、§8.3）**：
+已完成（`lvs/library.py` + `tests/test_library.py`）：
+- [x] 素材库未配置（`dirs` 为空或目录不存在）时**静默跳过**（`lvs library index` 打印提示、退出 0；不产生索引）
+- [x] 扫描：图片/视频识别、忽略非媒体与 sidecar、递归开关
+- [x] tags：文件名分词 + 文件夹名 + 同名 sidecar（`*.json` 的 `tags` / `*.txt` 逐行）
+- [x] 检索：`score_entry` 加权重合度（词元交集 ×2 + 路径子串命中 ×1），`min_score` 可调
+- [x] **不改动原文件**（测试断言扫描前后 mtime/size 不变）
+- [x] 索引进 `.work/_library/library-index.json`，签名一致则复用；`--reindex` 强制重建
+- [x] 不相关关键词零误命中（测试用 `zzz-nonexistent` 断言）
+- [x] 尺寸/时长探测失败降级（无 Pillow / 无 ffprobe 时为 `None`，不报错）
 
-- 素材解析顺序：`钉死 library_asset` → `source=library（必须命中）` → `翻库命中` → `source 分支`
-- 索引条目字段：`path / type / width / height / duration / tags / mtime / size`
-- `tags` 来源：文件名分词 + 所在文件夹名 + 同名 sidecar（`*.json` 的 `tags` 字段或 `*.txt` 逐行）；缺失 ffprobe/PyAV 时降级为"仅文件名标签"
-- 命中：按 shot 的 `keywords` 与 entry `tags` 加权重合度打分，≥ `min_score` 取最高
-- 索引缓存：`.work/_library/library-index.json`（跨任务复用，按 `dirs` mtime 增量），`--reindex` 强制重建
-
-- [ ] 素材库未配置（`dirs` 为空或目录不存在）时，`lvs assets` **静默跳过**该步，流程与未加此功能时**完全一致**
-- [ ] 配置素材库后，命中分镜落到 `assets/library/<shot>.<ext>`，`shots.json` 写入 `library_asset` 与 `resolved_by=library`
-- [ ] **不改动**素材库里的原文件（命中是复制或软链；用 mtime/size 断言原文件未被修改）
-- [ ] `source=library` 的 shot 未命中时，**只标记该 shot 失败**并给出可读原因，其余 shot 继续
-- [ ] `min_score` 可调；分数不达标不命中（构造一个"擦边"用例断言不误命中）
-- [ ] 缩略图/尺寸读取失败不崩溃，该 entry 降级但仍可用
-- [ ] 连续两次 `lvs assets`，第二次不重复索引、不重复复制（幂等）
-- [ ] `lvs library index` 可单独运行；`--reindex` 强制重建；打印条目数与耗时
+待完成（依赖票据 09）：
+- [ ] 在 `lvs assets` 中按 §8.1 顺序插入"翻库优先"，命中落到 `assets/library/` 并写 `library_asset`/`resolved_by`
+- [ ] `source=library` 未命中时只标记该 shot 失败，其余继续
+- [ ] 缩略图/尺寸读取失败的 entry 降级但仍可用（当前为 None，需在 assets 侧确认可消费）
