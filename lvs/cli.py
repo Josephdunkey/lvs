@@ -4,6 +4,7 @@
 
     doctor   环境体检（已实现）
     status   续跑摘要：一行一任务（门禁 / 产物 / 下一步）—— **续跑第一步跑这个**
+    map      行号锚定读取：show / grep / ls（代替 numbered 转储）
     parse    解析拍摄稿 → parse.json
     shots    LLM 拆镜 + 提示词 → shots.json
     assets   素材获取（本地素材库 → Pexels / 本地生图）
@@ -337,6 +338,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix", default="UGE", help="只看某前缀的任务（默认 UGE）")
     p.add_argument("--json", action="store_true", help="机器可读输出（给 Agent 用）")
 
+    # 行号锚定读取（S4）：取代“转储成 *_numbered.txt 再分页读”。
+    # 不接 parents=[common]：它不读配置、不碰任务目录，只看磁盘上的文件。
+    p = sub.add_parser(
+        "map", help="行号锚定读取：按区间看源码/文档（别再造 *_numbered.txt）",
+    )
+    msub = p.add_subparsers(dest="map_command", metavar="<动作>")
+    s = msub.add_parser("show", help="打印某文件的第 start..end 行（默认带行号）")
+    s.add_argument("file", metavar="文件")
+    s.add_argument("start", type=int, metavar="起")
+    s.add_argument("end", type=int, nargs="?", default=None, metavar="止",
+                   help="给定则打到这一行；不给 = 起 + 59")
+    s.add_argument("--raw", action="store_true", help="不打行号（方便直接复制）")
+    g = msub.add_parser("grep", help="只打命中行（默认 50 处封顶）")
+    g.add_argument("pattern", metavar="正则")
+    g.add_argument("paths", nargs="*", metavar="路径", help="文件或目录；缺省 = 仓库根")
+    g.add_argument("--context", type=int, default=0, metavar="N", help="每处多打上下各 N 行")
+    g.add_argument("--limit", type=int, default=50, metavar="N", help="最多打多少处（默认 50）")
+    g.add_argument("-i", "--ignore-case", action="store_true", help="忽略大小写")
+    g.add_argument("--width", type=int, default=160, metavar="N", help="命中行截断宽度（默认 160）")
+    msub.add_parser("ls", help="列出遗留的 *_numbered.txt（S4 要消灭的中间产物）")
+
     return parser
 
 
@@ -590,6 +612,13 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import summary as summary_mod
 
         return summary_mod.run_command(config_path, args)
+
+    # map：行号锚定读取（S4）。同样**不需要配置文件** ——
+    # 它只是把磁盘上的某几行打出来，不碰任务目录、不写任何东西。
+    if args.command == "map":
+        from lvs import maptool
+
+        return maptool.run_command(args)
 
     # 其余命令：必须能定位到配置
     if not config_path:
