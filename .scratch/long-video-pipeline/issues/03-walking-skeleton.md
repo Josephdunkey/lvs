@@ -4,9 +4,21 @@
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `lvs run` 在**不配置 LLM、不配 Pexels key** 的情况下也能跑通，产出可播放的 `final.mp4`
 - [ ] 成片时长与音频时长偏差 < 1 秒
 - [ ] 字幕在成片中可见（中文字体正常显示，不出现方块）
 - [ ] 三个分镜的画面切换点与硬编码时间轴一致
+
+---
+
+## Comments
+
+**What was built:** `lvs run --demo` —— 走路骨架。3 个硬编码分镜 + ffmpeg 生成的占位图，不配 LLM / Pexels / ComfyUI 即可跑通「图 → 声 → 字幕 → 成片」。
+
+**交付记录（实测）**
+- `lvs run --demo` 产出 `final.mp4`，1920×1080 H.264 + AAC，字幕已烧录
+- 画面轨 12.0s｜旁白 12.0s｜成片 12.0s → **偏差 0.05s**
+- 中文字幕渲染正常（抽帧目视确认，无方块）
+- 三个分镜切换点与时间轴一致

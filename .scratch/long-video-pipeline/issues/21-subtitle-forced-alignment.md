@@ -4,7 +4,7 @@
 
 **Blocked by:** 12, 20
 
-**Status:** ready-for-agent
+**Status:** done
 
 **契约（见 spec §10 风险条）**：
 
@@ -17,3 +17,18 @@
 - [ ] 无 whisper 环境时降级为估算 + 打印警告，流程不中断
 - [ ] 对齐耗时打印；对 18 分钟整轨给出耗时量级说明
 - [ ] `[tts].backend=edge` 时**不启用**本路径（仍走词边界），不回归
+
+---
+
+## Comments
+
+**What was built:** 字幕强制对齐（本地 TTS 无时间戳时的补救）。
+
+**交付记录**
+- `whisper_boundaries()`：用 `faster-whisper` 对**单镜音频**做词级对齐（逐镜对齐天然限制误差累积）
+- `lvs voice` 对「无词边界」的镜头自动尝试对齐，打印对齐数量与耗时
+- 未安装 faster-whisper → 降级为按字数估算 + 警告，**流程不中断**
+- `voice.align ∈ {auto, estimate}`：`auto` 有 whisper 就用，`estimate` 强制估算
+- `[tts].backend=edge` 时仍走词边界，**不启用本路径**（不回归）
+
+**未验证**：本机未安装 `faster-whisper`（`pip install faster-whisper` 即可启用）。

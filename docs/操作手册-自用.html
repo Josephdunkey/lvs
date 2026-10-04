@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LongVideoStudio 操作手册（自用）</title>
+<style>
+  :root { --fg:#1f2328; --line:#d0d7de; --code-bg:#f6f8fa; --accent:#0969da;
+           --warn-bg:#fff8c5; --warn-line:#d4a72c; --ok:#1a7f37; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f6f8fa; color:var(--fg);
+          font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+          font-size:16px; line-height:1.75; }
+  .page { max-width:900px; margin:0 auto; background:#fff;
+           padding:56px 64px 96px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size:29px; margin:0 0 8px; }
+  h2 { font-size:22px; margin:42px 0 12px; padding-bottom:8px;
+        border-bottom:1px solid var(--line); }
+  h3 { font-size:17px; margin:26px 0 8px; }
+  code { background:var(--code-bg); padding:2px 6px; border-radius:5px;
+          font-family:Consolas,monospace; font-size:14px; }
+  pre { background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+         padding:14px 16px; overflow-x:auto; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:15px; }
+  th,td { border:1px solid var(--line); padding:8px 12px; text-align:left;
+           vertical-align:top; }
+  th { background:var(--code-bg); }
+  blockquote { margin:14px 0; padding:12px 16px; background:var(--warn-bg);
+                border-left:4px solid var(--warn-line); border-radius:0 6px 6px 0; }
+  blockquote p { margin:6px 0; }
+  hr { border:none; border-top:1px solid var(--line); margin:34px 0; }
+  a { color:var(--accent); }
+  @media print { body { background:#fff; } .page { box-shadow:none; padding:0; max-width:none; } }
+</style></head><body><div class="page">
+<h1>LongVideoStudio 操作手册（自用版）</h1>
+<blockquote>
+<p>写给<strong>你</strong>的。按你的实际环境写的：DeepSeek 拆镜 + 本地 TTS(8100) + ComfyUI 生图 + 黑白漫画风格。
+目标：晚上回去照着敲，能出片。<strong>带 ⚠️ 的地方是我实测踩过的坑，请务必看一眼。</strong></p>
+</blockquote>
+<hr />
+<h2>0. 三十秒总览</h2>
+<p><strong>你的机器上要同时存在三个东西</strong>（这是整套流程的全部依赖）：</p>
+<table>
+<thead>
+<tr>
+<th>东西</th>
+<th>干什么</th>
+<th>启动方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ComfyUI</strong>（端口 8188）</td>
+<td>出图（你 90% 的镜都靠它）</td>
+<td>双击 <code>D:\ComfyUI\start_comfyui.cmd</code></td>
+</tr>
+<tr>
+<td><strong>本地 TTS</strong>（端口 8100）</td>
+<td>配音</td>
+<td><code>D:\qwentts\lvs_tts_server.py</code>（见 §2.2）</td>
+</tr>
+<tr>
+<td><strong>DeepSeek key</strong></td>
+<td>拆镜（已配好，不用管）</td>
+<td>已在 <code>config.toml</code> 里</td>
+</tr>
+</tbody>
+</table>
+<p><strong>你的工作循环</strong>（一条命令都不用背，照抄）：</p>
+<pre><code>起 ComfyUI  →  lvs run（出图）  →  关 ComfyUI  →  lvs voice（配音）  →  开着也行  →  lvs build（合成）
+</code></pre>
+<blockquote>
+<p>⚠️ <strong>为什么中间要关 ComfyUI</strong>：8GB 显存装不下"生图模型 + TTS 模型"两个。
+不关的话 <code>lvs voice</code> 会直接报错拦下（这是<strong>故意的</strong>，不是 bug）。</p>
+</blockquote>
+<hr />
+<h2>1. 今晚第一次跑：照这个顺序</h2>
+<h3>1.1 先体检（30 秒）</h3>
+<pre><code class="language-powershell">cd D:\LongVideoStudio
+.venv\Scripts\python.exe -m lvs doctor
+</code></pre>
+<p><strong>看三类标记</strong>：<code>[通过]</code> 不用管；<code>[警告]</code> 大多可以先不管；<code>[缺失]</code> 才要处理。</p>
+<blockquote>
+<p>⚠️ <strong>你现在会看到这一条警告，它是真的</strong>：
+<code>[警告] 素材来源策略：source_mode = auto，但 [pexels].api_key 为空</code>
+意思是：<code>auto</code> 会让一部分镜去 Pexels 找素材，但你<strong>没填 Pexels key</strong>，
+那些镜必然失败。<strong>解决办法见 §4.1</strong>（这是我这次审查专门为你的配置加的检查）。</p>
+</blockquote>
+<h3>1.2 起两个服务</h3>
+<pre><code class="language-powershell"># 窗口 1：ComfyUI（首次加载模型要 1-2 分钟，别急着敲下一条）
+D:\ComfyUI\start_comfyui.cmd
+
+# 窗口 2：本地 TTS
+cd D:\qwentts
+python lvs_tts_server.py          # 确认它打印出监听 8100
+</code></pre>
+<p>起来后<strong>验证一下</strong>（新开一个窗口）：</p>
+<pre><code class="language-powershell">cd D:\LongVideoStudio
+.venv\Scripts\python.exe -c &quot;from lvs import imagegen, tts, guard; from lvs.config import Config; c=Config.load('config.toml'); print('ComfyUI:', imagegen.ComfyClient(c.get('comfyui.base_url')).health()); print('TTS:', tts.OpenAISpeechBackend(c.get('tts.base_url')).health())&quot;
+</code></pre>
+<p><strong>两个都应该是 <code>True</code>。</strong> 若 ComfyUI 是 <code>False</code> 但你确定它开着 —— 见 §5 的代理那条。</p>
+<h3>1.3 挑一集跑</h3>
+<p>以《挪威的森林》为例（它有 8 篇稿子，定妆库也齐）：</p>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;
+$C = &quot;config.toml&quot;
+$T = &quot;NW01P1&quot;                                   # 任务名，自己起，别改来改去
+$M = &quot;D:\fanshu\挪威的森林\10-语料\知识视频素材库\05-拍摄稿\01-P1.md&quot;   # ← 改成你实际要跑的那篇
+
+&amp; $P -m lvs run $M --task $T --config $C
+</code></pre>
+<p><strong>然后它会停下来问你</strong>（这是设计如此，见 §3）：</p>
+<pre><code>⛔ G0·拍摄稿 未放行（还没审）
+  看产物：
+    D:\fanshu\...\01-P1.md
+  下一步（审完挑一条）：
+    lvs gate --task NW01P1 --approve G0 --note &quot;看过了，OK&quot;
+    ...
+</code></pre>
+<p><strong>看完稿子没问题，就批准；再重跑同一条 <code>run</code>。</strong> 一路重复到出片。</p>
+<blockquote>
+<p>💡 嫌麻烦、今晚只想先看效果：加 <code>--skip-gates</code> 一次跑完（等于放弃那 6 道保护）。</p>
+</blockquote>
+<hr />
+<h2>2. 三个服务怎么起、怎么关</h2>
+<h3>2.1 ComfyUI（生图，8188）</h3>
+<pre><code class="language-powershell">D:\ComfyUI\start_comfyui.cmd            # 显存吃紧可加 --lowvram
+</code></pre>
+<ul>
+<li><strong>什么时候要开</strong>：<code>lvs assets</code>（出图）时</li>
+<li><strong>什么时候必须关</strong>：<code>lvs voice</code>（本地配音）之前 —— 否则显存不够，工具会拦住你</li>
+<li><strong>怎么关</strong>：直接关那个窗口</li>
+</ul>
+<h3>2.2 本地 TTS（配音，8100）</h3>
+<pre><code class="language-powershell">cd D:\qwentts
+python lvs_tts_server.py
+</code></pre>
+<ul>
+<li><strong>什么时候要开</strong>：<code>lvs voice</code> 时</li>
+<li><strong>你的音色配置</strong>在 <code>config.toml</code> 的 <code>[tts]</code>：<code>voice-F-clean-youth</code>，
+  <code>mode = "clone"</code>，参考音频在 <code>D:\fanshu\村上春树\...\_voice_probe\ref-F-full.wav</code></li>
+<li><strong>不想用本地 TTS</strong>（比如它坏了，但你要先出个能看的片）：
+  把 <code>[tts] backend</code> 临时改成 <code>"edge"</code> —— 免费联网、不占显存、不需要开这个服务。</li>
+</ul>
+<h3>2.3 DeepSeek（拆镜）</h3>
+<p>已在 <code>config.toml</code> 配好，<strong>不用起服务、不用管</strong>。只有 <code>lvs shots</code> 那一步用它。</p>
+<hr />
+<h2>3. 六道关卡：它为什么老停下来</h2>
+<p><code>lvs run</code> 默认会在 6 个地方停下来，让你确认。<strong>这不是卡住，是保护</strong>（防止白跑几小时）：</p>
+<table>
+<thead>
+<tr>
+<th>关卡</th>
+<th>停在哪</th>
+<th>它在问什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G0</strong></td>
+<td>拆镜之前</td>
+<td>稿子写对了吗？（稿子错一个字 → 后面几百张图白做）</td>
+</tr>
+<tr>
+<td><strong>G1</strong></td>
+<td>出图之前</td>
+<td>切出来的镜对不对？（<strong>这一步最值</strong>：看 <code>shots.json</code>）</td>
+</tr>
+<tr>
+<td><strong>G2</strong></td>
+<td>出图之前</td>
+<td>人物的脸冻结了吗？</td>
+</tr>
+<tr>
+<td><strong>G3</strong></td>
+<td>配音之前</td>
+<td>图有没有整批崩？（<strong>最贵的一步</strong>，边跑边查）</td>
+</tr>
+<tr>
+<td><strong>G4</strong></td>
+<td>合成之前</td>
+<td>配音字幕对得上吗？</td>
+</tr>
+<tr>
+<td><strong>G5</strong></td>
+<td>交付之前</td>
+<td>能发了吗？</td>
+</tr>
+</tbody>
+</table>
+<h3>三种过闸方式</h3>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;
+
+# ① 看现在卡在哪
+&amp; $P -m lvs gate --task NW01P1
+
+# ② 批准（--note 是给你自己看的，别省）
+&amp; $P -m lvs gate --task NW01P1 --approve G0 --note &quot;稿子看过了&quot;
+
+# ③ 打回（必须写原因，否则三天后的你不知道要改什么）
+&amp; $P -m lvs gate --task NW01P1 --reject G1 --note &quot;第 12 镜画面跑偏了&quot;
+
+# ④ 这道门对这次不适用 → 跳过（也必须写原因）
+&amp; $P -m lvs gate --task NW01P1 --skip G2 --note &quot;纯空镜，没有人物&quot;
+</code></pre>
+<blockquote>
+<p><strong>G2 你会经常需要 skip</strong> —— 因为只有《挪威的森林》有定妆库，
+别的书（资治通鉴 / 夜谭十记）没有 <code>_cast</code>，G2 没东西可批。</p>
+</blockquote>
+<hr />
+<h2>4. ⚠️ 你的配置里的两个坑（这次审查专门查出来的）</h2>
+<h3>4.1 <code>source_mode = "auto"</code> + Pexels key 为空 → 一部分镜必然失败</h3>
+<p><strong>问题</strong>：你的 <code>config.toml</code> 里</p>
+<pre><code class="language-toml">[shots]
+source_mode = &quot;auto&quot;          # ← 让 LLM/规则逐镜决定去哪找素材
+[pexels]
+api_key = &quot;&quot;                  # ← 但这里是空的
+</code></pre>
+<p><code>auto</code> 会把一部分镜判给 Pexels，而那些镜<strong>一定拿不到素材</strong>。
+实测：13 镜里有 8 镜本该出图，却因为另外 5 镜要 Pexels 而<strong>整批受影响</strong>。</p>
+<p><strong>怎么改（三选一，推荐第 ①）</strong>：</p>
+<pre><code class="language-toml"># ① 推荐：你的图本来就全靠 ComfyUI 画 → 固定成 local，问题彻底消失
+[shots]
+source_mode = &quot;local&quot;
+
+# ② 或者：填上 Pexels key（免费申请 https://www.pexels.com/api/）
+#    好处是&quot;城市空镜&quot;这类实拍感强的镜能从网上拿现成视频
+
+# ③ 或者：只用某几镜改（编辑 .work/&lt;任务&gt;/shots.json，把 &quot;source&quot; 改成 &quot;local&quot;）
+</code></pre>
+<blockquote>
+<p>好消息：<strong>这个坑我已经在代码上兜住了</strong> —— 现在 Pexels 没配 key 只会让<strong>那几个镜</strong>失败，
+其余镜照常出图（退出码 1 = 有失败件），不会再整批卡死。但把上面改掉更省事。</p>
+</blockquote>
+<h3>4.2 一份 <code>config.toml</code> + 多本书 → 定妆库会串</h3>
+<p><strong>问题</strong>：你的 <code>config.toml</code> 里</p>
+<pre><code class="language-toml">[paths]
+lib = &quot;D:/fanshu/挪威的森林/10-语料/知识视频素材库&quot;
+</code></pre>
+<p><strong>所有</strong>项目内路径（定妆库、定妆卡、风格文件）都从这一行派生。
+所以跑《资治通鉴》时，它会去<strong>挪威的森林</strong>那里找定妆卡 —— 找不到就报错或空转。</p>
+<p><strong>怎么改：给每本书各建一份配置</strong>（一次性，之后一劳永逸）</p>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;
+
+# 建一份《资治通鉴》的项目配置（会生成 config.资治通鉴.toml）
+&amp; $P -m lvs init &quot;D:\fanshu\资治通鉴\10-语料\知识视频素材库&quot; --name 资治通鉴
+
+# 之后跑这本书就带 --config
+&amp; $P -m lvs run $稿子 --task ZZTJ01 --config config.资治通鉴.toml
+</code></pre>
+<blockquote>
+<p>机器相关的项（ComfyUI 地址 / TTS 服务 / API key）<strong>沿用主 <code>config.toml</code></strong>，不用重配。</p>
+</blockquote>
+<hr />
+<h2>5. 出错了看这里（对照你的真实环境）</h2>
+<table>
+<thead>
+<tr>
+<th>你看到</th>
+<th>真正的原因</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>ComfyUI 不可达</code>，但你明明开着</strong></td>
+<td>系统代理把 <code>127.0.0.1</code> 也拦了（Clash/VPN 常见）</td>
+<td><strong>已修</strong>：工具现在会绕开代理访问本机。若还不行，检查 <code>ComfyUI</code> 窗口有没有报错退出</td>
+</tr>
+<tr>
+<td><code>GPU 串行冲突：ComfyUI 正在运行</code></td>
+<td>你在 ComfyUI 还开着时跑了 voice</td>
+<td>关掉 ComfyUI 窗口，重跑 <code>lvs voice</code></td>
+</tr>
+<tr>
+<td><code>显存不足</code> / <code>需要 4600 MB</code></td>
+<td>同上，或别的程序占了显存</td>
+<td>关 ComfyUI / 关浏览器硬件加速</td>
+</tr>
+<tr>
+<td><code>Pexels key 未配置</code>（个别镜）</td>
+<td>见 §4.1</td>
+<td>改 <code>source_mode = "local"</code></td>
+</tr>
+<tr>
+<td><code>素材库没找到匹配的图</code></td>
+<td>库策略下关键词没命中</td>
+<td>你库是空的，正常不会遇到；若遇到见 §4.1 第 ①</td>
+</tr>
+<tr>
+<td><code>TTS 服务不可达 127.0.0.1:8100</code></td>
+<td>本地 TTS 没起</td>
+<td><code>cd D:\qwentts &amp;&amp; python lvs_tts_server.py</code></td>
+</tr>
+<tr>
+<td><code>LLM 返回 HTTP 402/401</code></td>
+<td>DeepSeek 余额或 key 问题</td>
+<td>去 DeepSeek 后台看余额</td>
+</tr>
+<tr>
+<td><strong>跑到一半断了 / 电脑关了</strong></td>
+<td>——</td>
+<td><strong>重跑同一条命令</strong>，做过的会跳过（这是它的核心能力）</td>
+</tr>
+<tr>
+<td>成片是<strong>黑屏</strong></td>
+<td>画面轨没接上，多半有镜的图失败了</td>
+<td>看它提示的黑屏占比；<code>lvs assets</code> 补齐失败的镜</td>
+</tr>
+<tr>
+<td>成片<strong>没声音</strong></td>
+<td>配音没合进去</td>
+<td>确认 <code>[tts] backend</code> 不是 <code>"silent"</code>（那是测试用的静音）</td>
+</tr>
+<tr>
+<td>字幕有<strong>错别字/时间偏</strong></td>
+<td>对齐问题</td>
+<td>你配了 <code>align = "auto"</code>（用 whisper）；想快点可临时改 <code>"estimate"</code></td>
+</tr>
+</tbody>
+</table>
+<h3>三个万能排查命令</h3>
+<pre><code class="language-powershell">&amp; $P -m lvs doctor --task NW01P1     # 1. 环境有什么问题
+&amp; $P -m lvs gate   --task NW01P1     # 2. 卡在哪一道关卡
+&amp; $P -m lvs board  --task NW01P1     # 3. 整体进度一览
+</code></pre>
+<hr />
+<h2>6. 一步一步来（不想用 <code>run</code> 的时候）</h2>
+<p><code>lvs run</code> 是一键脚本；出问题时<strong>拆开敲</strong>更好定位：</p>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;
+$C = &quot;config.toml&quot;
+$T = &quot;NW01P1&quot;
+
+# 1) 读稿（免费、可反复跑）
+&amp; $P -m lvs parse &quot;D:\fanshu\挪威的森林\10-语料\知识视频素材库\05-拍摄稿\01-P1.md&quot; --task $T --config $C
+
+# 2) 拆镜（用 DeepSeek；想不花 key 加 --no-llm）
+&amp; $P -m lvs shots --task $T --config $C
+
+# 3) 出图（★ 需要 ComfyUI 开着）
+&amp; $P -m lvs assets --task $T --config $C
+
+# 4) 配音（★ 需要 ComfyUI 关掉 + 本地 TTS 开着）
+&amp; $P -m lvs voice --task $T --config $C
+
+# 5) 合成
+&amp; $P -m lvs build --task $T --config $C
+</code></pre>
+<p><strong>成片在</strong>：<code>D:\LongVideoStudio\.work\&lt;任务名&gt;\final.mp4</code></p>
+<h3>中途想改</h3>
+<pre><code class="language-powershell"># 某个镜找错图 → 编辑 .work\&lt;任务&gt;\shots.json 里那一镜的字段，然后
+&amp; $P -m lvs assets --task $T --source local --only local     # 只重做本地生图这一支
+
+# 整批不要了，全重来
+&amp; $P -m lvs assets --task $T --force
+
+# 只重出某几个镜的图（先删掉它们的图，再重跑）
+Remove-Item &quot;.work\$T\assets\local\shot-012.png&quot;
+&amp; $P -m lvs assets --task $T
+</code></pre>
+<hr />
+<h2>7. 出图质量相关的（你关心的重点）</h2>
+<p>你的风格是 <code>jp-youth-manga-bw</code>（黑白日漫），配置在 <code>[shots].style</code>。</p>
+<p><strong>改动图的提示词</strong>：<code>shots.json</code> 里每镜有 <code>prompt</code> / <code>visual</code> / <code>keywords</code>。
+改完重跑 <code>lvs assets</code>（记得先删掉那一镜的旧图，否则会被跳过）。</p>
+<p><strong>换风格</strong>：</p>
+<pre><code class="language-powershell">&amp; $P -m lvs styles                      # 看全部 30 个内置风格（按题材分组）
+&amp; $P -m lvs styles 黑白版画              # 只看某一类
+</code></pre>
+<p>想加自己的风格：写进 <code>&lt;素材库&gt;\00-设定\风格预设.toml</code>，<strong>不用改代码</strong>。</p>
+<p><strong>定妆（人物一致性）</strong>——只有《挪威的森林》配好了：</p>
+<pre><code class="language-powershell">&amp; $P -m lvs cast --lint                 # 检查定妆卡写法（9 条判据）
+&amp; $P -m lvs cast --extract              # 从定妆卡抽取到库
+&amp; $P -m lvs cast --render               # 出定妆候选图
+</code></pre>
+<p>⚠️ 改了定妆卡<strong>必须重跑 <code>--extract</code></strong>，否则库里还是旧的脸。</p>
+<p><strong>巡检（防止整批崩）</strong>：</p>
+<pre><code class="language-powershell">&amp; $P -m lvs qc --task $T                # 全量查
+&amp; $P -m lvs qc --task $T --only 1-40    # 只查前 40 镜（大任务边跑边查）
+</code></pre>
+<blockquote>
+<p>G3 那道门现在<strong>要求你先跑过 <code>lvs qc</code></strong>（否则批准也不放行）——这是我上轮加的，专门防"跑完 10 小时才发现整批崩"。</p>
+</blockquote>
+<hr />
+<h2>8. 命令速查（可以贴墙上）</h2>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;     # 先设这个，后面短
+
+# ── 体检 / 看状态 ──────────────────────
+&amp; $P -m lvs doctor                          # 环境体检
+&amp; $P -m lvs gate   --task &lt;名&gt;               # 卡在哪一关
+&amp; $P -m lvs board  --task &lt;名&gt;               # 进度看板
+&amp; $P -m lvs styles                          # 有哪些画风
+
+# ── 正经跑一集 ────────────────────────
+&amp; $P -m lvs run &quot;&lt;稿子.md&gt;&quot; --task &lt;名&gt;       # 一键（会过 6 道门）
+&amp; $P -m lvs run &quot;&lt;稿子.md&gt;&quot; --task &lt;名&gt; --skip-gates   # 一键跳过人审
+
+# ── 拆开跑 ────────────────────────────
+&amp; $P -m lvs parse &quot;&lt;稿子.md&gt;&quot; --task &lt;名&gt;
+&amp; $P -m lvs shots --task &lt;名&gt;
+&amp; $P -m lvs assets --task &lt;名&gt;
+&amp; $P -m lvs voice --task &lt;名&gt;
+&amp; $P -m lvs build --task &lt;名&gt;
+
+# ── 过关卡 ────────────────────────────
+&amp; $P -m lvs gate --task &lt;名&gt; --approve G0 --note &quot;原因&quot;
+&amp; $P -m lvs gate --task &lt;名&gt; --reject  G1 --note &quot;原因&quot;
+&amp; $P -m lvs gate --task &lt;名&gt; --skip    G2 --note &quot;原因&quot;
+
+# ── 新书接入（一次性）────────────────
+&amp; $P -m lvs init &quot;D:\fanshu\&lt;书名&gt;\10-语料\知识视频素材库&quot; --name &lt;名&gt;
+
+# ── 清理 ──────────────────────────────
+&amp; $P -m lvs clean --all                     # 只报告，不删
+&amp; $P -m lvs clean --all --yes               # 真删（危险，先看清楚报告）
+
+# ── 图形界面 ──────────────────────────
+&amp; $P -m lvs gui                             # 浏览器里点着用
+</code></pre>
+<hr />
+<h2>9. 一页纸速记</h2>
+<pre><code>【每晚开工】
+  1) D:\ComfyUI\start_comfyui.cmd          ← 窗口1，等它加载完
+  2) cd D:\qwentts &amp;&amp; python lvs_tts_server.py  ← 窗口2
+
+【跑一集】
+  3) cd D:\LongVideoStudio
+  4) .venv\Scripts\python.exe -m lvs run &quot;&lt;稿子&gt;&quot; --task &lt;名&gt;
+  5) 遇到关卡 → lvs gate --task &lt;名&gt; --approve G0 --note &quot;...&quot;
+                然后重跑第 4 步
+  6) 出图那步做完 → 关掉 ComfyUI 窗口（腾显存给配音）
+  7) 继续跑 → 成片在 .work\&lt;名&gt;\final.mp4
+
+【出事就三个命令】
+  lvs doctor / lvs gate / lvs board
+
+【永远记住】
+  · 断了就重跑，做过的会跳过
+  · 关了 ComfyUI 再配音（8GB 显存装不下两个）
+  · 打回/跳过一定写 --note，三天后的你会感谢现在的你
+</code></pre>
+<hr />
+<h2>附：状态说明</h2>
+<p>本手册基于 2026-10-03 的代码状态。这一轮审查（第十一轮）为你修了 5 个真 bug：</p>
+<ol>
+<li><strong>本机服务被系统代理拦掉</strong> → 开着 ComfyUI 却报"不可达"（新增 <code>lvs/net.py</code>，本机一律绕代理）</li>
+<li><strong>全新项目第一次 <code>lvs run</code> 连 <code>parse</code> 都不跑就卡在 G0</strong>，还让你"看产物"（列表空的）</li>
+<li><strong>Pexels key 为空时整个 <code>assets</code> 阶段硬失败</strong> → 本该出图的镜一张都不出</li>
+<li><code>Config.load("config.toml")</code> 传字符串直接崩，报 <code>AttributeError</code>（一句人话都没有）</li>
+<li><strong><code>doctor</code> 不认识 <code>silent</code> 配音后端</strong> → 对着正常配置报"未知后端"</li>
+</ol>
+<p>另外新增了 <code>doctor</code> 的<strong>"素材来源策略"检查</strong>，专门在花钱之前发现 §4.1 那个矛盾。</p>
+<p>测试：<strong>约 770 个用例全绿</strong>（含 14 个专为这轮修复写的回归）。</p>
+</div></body></html>

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>出图流程 · 一致性现状核对</title>
+<style>
+  :root { --fg:#1f2328; --line:#d0d7de; --code-bg:#f6f8fa; --accent:#0969da;
+           --warn-bg:#fff8c5; --warn-line:#d4a72c; --ok:#1a7f37; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f6f8fa; color:var(--fg);
+          font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+          font-size:16px; line-height:1.75; }
+  .page { max-width:900px; margin:0 auto; background:#fff;
+           padding:56px 64px 96px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size:27px; margin:0 0 8px; }
+  h2 { font-size:21px; margin:40px 0 12px; padding-bottom:8px;
+        border-bottom:1px solid var(--line); }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  code { background:var(--code-bg); padding:2px 6px; border-radius:5px;
+          font-family:Consolas,monospace; font-size:14px; }
+  pre { background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+         padding:14px 16px; overflow-x:auto; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:15px; }
+  th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); }
+  blockquote { margin:14px 0; padding:12px 16px; background:var(--warn-bg);
+                border-left:4px solid var(--warn-line); border-radius:0 6px 6px 0; }
+  blockquote p { margin:6px 0; }
+  hr { border:none; border-top:1px solid var(--line); margin:34px 0; }
+  a { color:var(--accent); }
+  @media print { body { background:#fff; } .page { box-shadow:none; padding:0; max-width:none; } }
+</style></head><body><div class="page">
+<h1>出图流程 · 一致性现状核对（2026-10-03）</h1>
+<blockquote>
+<p>你问：「出图流程后来有没有帮我修的？现在有没有一致性校验了？」
+这份是<strong>逐条读代码 + 实机核实</strong>的结果。
+<strong>当天晚上又动手补齐了 L2</strong>，所以下面写的是补齐后的状态（已在真机验证）。</p>
+</blockquote>
+<hr />
+<h2>一、出图流程：<strong>修过了</strong>（前一轮的清单）</h2>
+<p>见 <code>docs/代码审查-全流程门禁与锚定修复.md</code>。当时修的：</p>
+<table>
+<thead>
+<tr>
+<th>修了什么</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>定妆锚定 7 条写法判据 + <code>lvs cast --lint</code></strong></td>
+<td>把"能画/不能画"的写法规则变成可执行体检（度量、动作、比喻、否定、属性过多、特征没前置…）</td>
+</tr>
+<tr>
+<td>★ <strong>主语丢失 bug</strong></td>
+<td>改完的锚定全句没有 <code>girl/woman/person</code> → 模型自己决定画谁，<strong>画出了男性</strong>。lint 全绿、测试全绿，只有看图才现形</td>
+</tr>
+<tr>
+<td><strong>定妆照提示词自相矛盾</strong></td>
+<td>场景图的 <code>16:9</code> 与 <code>dramatic chiaroscuro</code> 混进定妆提示词 → 同一段锚定出<strong>四张不同的脸</strong></td>
+</tr>
+<tr>
+<td><strong>代词槽位 4 个 bug</strong></td>
+<td>含 <code>fullmatch</code> 拿孤立子串判边界的陷阱（"与直子同龄"可能被当同框）</td>
+</tr>
+<tr>
+<td><code>strip_aspect</code> 画幅清理</td>
+<td>定妆照不该继承场景图的宽幅</td>
+</tr>
+<tr>
+<td><strong>G2 定妆门禁 / G3 生图巡检接入 <code>lvs</code></strong></td>
+<td>把散在外面的脚本逻辑收进流水线，并接进门禁</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>二、一致性：三档阶梯，现在落到 <strong>L1 + L2</strong></h2>
+<p><code>docs/出图流程-v2-编排方案.md</code> §四定义三档。<strong>今天之前只落地了 L1</strong>，现已补齐 L2：</p>
+<table>
+<thead>
+<tr>
+<th>档</th>
+<th>机制</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>L1 文字锚定</strong></td>
+<td><code>{NAME}</code> → <code>lock.json.anchor</code> 注入提示词（<code>cast.apply_slots</code>）</td>
+<td>✅ 早已实现</td>
+</tr>
+<tr>
+<td><strong>L2 参考图 img2img</strong></td>
+<td>冻结定妆照当参考图，低去噪重绘</td>
+<td>✅ <strong>已补齐 + 真机验证</strong></td>
+</tr>
+<tr>
+<td>L3 LoRA</td>
+<td>云训角色 LoRA（本机 8G 训不了）</td>
+<td>⬜ 未做（规划中）</td>
+</tr>
+</tbody>
+</table>
+<h3>L2 补齐了什么（原先断在三处）</h3>
+<p>L2 原先处于本项目最典型的"<strong>半接线</strong>"状态 —— <code>_workflow_for</code> 会选模板，
+但<strong>没有任何代码把图送进去</strong>。三处断点都接上了：</p>
+<table>
+<thead>
+<tr>
+<th>断点</th>
+<th>现在的实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 没有上传能力</td>
+<td>新增 <code>ComfyClient.upload_image()</code>（手写 multipart，<strong>不引入 requests 依赖</strong>），把定妆照送进 ComfyUI 的 <code>input/</code></td>
+</tr>
+<tr>
+<td>② <code>generate()</code> 没有参考图参数</td>
+<td>新增 <code>generate(ref_image=…)</code> + <code>REF_IMAGE</code> / <code>DENOISE</code> 占位符</td>
+</tr>
+<tr>
+<td>③ 模板文件不存在</td>
+<td>新增 <code>workflows/zimage_scene_ref.json</code>（LoadImage → ImageScale(中心裁切) → VAEEncode → KSampler → VAEDecode → SaveImage）</td>
+</tr>
+</tbody>
+</table>
+<h3>判据（谁用参考图、谁不用）</h3>
+<p><code>assets._reference_for()</code> —— <strong>三条全满足</strong>才给参考图：</p>
+<ol>
+<li>配了 <code>[cast].ref_workflow</code></li>
+<li>本镜提示词里含人物槽位（<code>{NAOKO}</code>）</li>
+<li>该角色 <strong><code>bindable</code></strong>（已批准 <strong>且</strong> 参考图文件真的在）</li>
+</ol>
+<blockquote>
+<p><strong>第 3 条为什么不能省</strong>：未批准 = "这张脸还没定下来"。
+拿一张未批准的候选去锚定，等于把未审核的脸固化成全集标准 ——
+比不给参考图更糟，因为它是<strong>一致地错</strong>。</p>
+</blockquote>
+<p><code>assets._workflow_for(config, ref_available=…)</code> —— <strong>先取图、再选模板</strong>。
+顺序反了会出现"选了参考图模板却没有图可喂"，那时报错离根因很远。</p>
+<h3>开跑前会告诉你用没用上</h3>
+<p>因为 L2 有<strong>三处会悄悄失效</strong>，<code>lvs assets</code> 现在会先汇总一次：</p>
+<pre><code>[参考图 L2] 1/3 镜会用**冻结的定妆照**作参考图（img2img 低去噪）
+[参考图 L2]   2 镜回退纯文生图：本镜无人物槽位
+</code></pre>
+<p><strong>不许让"没生效"看起来像"生效了"</strong> —— 这是这一块最重要的设计约束。</p>
+<h3>真机验证（不是"应该能跑"）</h3>
+<table>
+<thead>
+<tr>
+<th>验的什么</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>上传参考图</td>
+<td>✅ 定妆候选 1.39 MB 送进 ComfyUI <code>input/</code></td>
+</tr>
+<tr>
+<td>参考图模板出图</td>
+<td>✅ 1344×768，40.6s</td>
+</tr>
+<tr>
+<td>走完整条 <code>lvs assets</code></td>
+<td>✅ 3 镜：1 镜走 img2img、2 镜回退文生图，退出码 1（一镜 Pexels 逐镜失败）</td>
+</tr>
+<tr>
+<td>ComfyUI 侧核对</td>
+<td>✅ <code>/history</code> 里那一条确实含 <code>LoadImage</code> 节点</td>
+</tr>
+<tr>
+<td>对照图</td>
+<td><code>docs/参考图对比-L2验证.png</code>（定妆照 / 纯文生图 / denoise 0.55 / 0.78 / 本次真机产物，五图并排）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>我看不了图</strong>（当前模型不支持读图）。所以"画得像不像"必须<strong>你来看</strong> ——
+对照图已经做好，打开就是五张并排。这是本项目的第一纪律（改了出图相关必须看产物），
+而我看不了，只能把判据交给你。</p>
+</blockquote>
+<p><strong>调参旋钮</strong>：<code>[cast].ref_denoise</code>（默认 0.55）。v2 方案给的区间是 0.45–0.60，
+<strong>太高换脸、太低换不出场景</strong>。逐镜调它即可，不用改模板。</p>
+<hr />
+<h2>三、★ 你的定妆库：9 个角色<strong>全部未批准</strong>（这条会影响你）</h2>
+<pre><code>NAOKO     state=IMG   候选 v1 有 4 张  → 未批准
+MIDORI    state=IMG   候选 v1 有 4 张  → 未批准
+渡边彻     state=IMG   候选 v2 有 8 张  → 未批准
+KIZUKI    state=IMG   候选 v1 有 4 张  → 未批准
+突撃隊     state=IMG   候选 v1 有 4 张  → 未批准
+直子的姐姐  state=PLAN  还没出候选
+REIKO     state=PLAN  还没出候选
+</code></pre>
+<p><code>_审阅表.png</code> 已生成，但<strong>没有人 approve</strong> → 全部 <code>bindable=False</code>。后果：</p>
+<ol>
+<li><strong><code>NW01P1</code> / <code>NW02P2</code> 会被 G2 拦住</strong>（两篇稿各有 1 处 <code>{NAOKO}</code>）；<code>P3–P5</code> 无槽位，放行。</li>
+<li><strong>即使放行，参考图也不会被用到</strong>（L2 判据第 3 条要求 <code>bindable</code>）——
+   人物一致性目前只靠 L1。</li>
+</ol>
+<p><strong>现在 <code>lvs doctor</code> 会主动报这条</strong>（新增检查项），不用你自己发现：</p>
+<pre><code>[警告] 定妆批准：5 个角色**有候选图但一个都没批准** —— 人物一致性不会生效。
+        ↳ 先看审阅表：…\_cast\_审阅表.png；然后 `lvs cast --approve &lt;名字&gt;`
+</code></pre>
+<h3>解锁只要两步</h3>
+<pre><code class="language-powershell"># 1) 看审阅表（已生成好）
+start &quot;D:\fanshu\挪威的森林\10-语料\知识视频素材库\_cast\_审阅表.png&quot;
+
+# 2) 批准（会把该轮候选**全部**冻结为参考图）
+$P = &quot;.venv\Scripts\python.exe&quot;
+&amp; $P -m lvs cast --approve NAOKO,MIDORI,渡边彻 --config config.toml
+
+# 只想留最好那一张（不想把 4 张都冻结）：
+&amp; $P -m lvs cast --approve NAOKO --from-file &quot;_cast/NAOKO/v1/cand-02.png&quot;
+</code></pre>
+<p>批准完之后，把 <code>[cast].ref_workflow = "zimage_scene_ref.json"</code> 填上，
+含 <code>{NAOKO}</code> 的镜就会走参考图（L1 + L2 同时生效）。</p>
+<hr />
+<h2>四、★★ 另一个静默失效：人脸巡检（Q006/Q007）<strong>一直是死的</strong></h2>
+<p>这是本轮新查出来的，和一致性不是一回事，但同样严重。</p>
+<p><code>lvs qc</code> 有两条检查：</p>
+<ul>
+<li><strong>Q006</strong>：空镜里检出人脸（项目注释里写着这是"<strong>Z-Image 最顽固的失败模式</strong>"）</li>
+<li><strong>Q007</strong>：人物镜没检出人脸</li>
+</ul>
+<p>它们依赖 <code>[qc].face_model</code>。实测结果：</p>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文件存在</td>
+<td>✅ 232,589 字节</td>
+</tr>
+<tr>
+<td><code>cv2</code> 装了</td>
+<td>✅ OpenCV 4.10.0</td>
+</tr>
+<tr>
+<td><code>cv2.FaceDetectorYN.create()</code></td>
+<td>❌ <strong>报错</strong>（<code>Can't read ONNX file</code>）</td>
+</tr>
+<tr>
+<td><code>onnxruntime</code> 加载</td>
+<td>✅ 能加载（结构确实是 YuNet：cls/obj/bbox/kps × 3 尺度）</td>
+</tr>
+<tr>
+<td>但输出<strong>退化</strong></td>
+<td>❌ <code>obj</code> 恒为 <strong>0</strong>；<code>cls</code> 对<strong>纯黑图与人像给出几乎相同的值</strong>（0.775 vs 0.775）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>结论：这个权重文件不可用</strong>，于是那两条检查<strong>一次都没真正跑过</strong>，
+而巡检报告看起来一切正常 —— 典型的<strong>静默降级</strong>。</p>
+<h3>已改为"大声说出来"</h3>
+<ul>
+<li><code>lvs qc</code> 会打印：<code>[巡检] ⚠ 人脸检测不可用 —— Q006/Q007 本次没有检查</code> + 原因 + 怎么修</li>
+<li><code>lvs doctor</code> 新增检查项 <code>人脸检测</code>，同源判据（<code>qc.face_model_status</code>，<strong>一处定义两处共用</strong>）</li>
+</ul>
+<h3>怎么修</h3>
+<p>放一个<strong>可用的</strong>人脸模型：</p>
+<pre><code class="language-powershell"># 官方 YuNet（OpenCV Zoo 的 face_detection_yunet_2023mar.onnx）
+# 放到仓库 models/yunet.onnx，或改 [qc].face_model 指过去
+</code></pre>
+<blockquote>
+<p>注意：我<strong>没有</strong>替你换模型 —— 那需要下载并把"换个模型后 Q006 判得准不准"
+在真图上验一遍（本项目纪律：<strong>校验器的价值全在报得准</strong>，不准的校验器比没有更糟）。
+你要是想让我做，说一声。</p>
+<p>暂时不需要人脸检查的话，设 <code>[qc].enable_faces = false</code> —— 这样它不再提示，
+你也不会误以为查过了。</p>
+</blockquote>
+<hr />
+<h2>五、仍然没有的</h2>
+<ul>
+<li>❌ <strong>没有"这张脸和那张脸是不是同一个人"的身份校验</strong>。
+  全仓检索 <code>embedding / similarity / arcface / insightface</code> → <strong>零命中</strong>。
+  <code>qc</code> 数的是脸的<strong>张数</strong>，不是<strong>身份</strong>。第 5 镜和第 12 镜画成两个人，工具查不出来。</li>
+<li>❌ <strong>这台 ComfyUI 上没有 IP-Adapter / FaceID / InstantID 节点</strong>（已查 <code>/object_info</code>，
+  965 个节点里只有官方基础节点）。所以"身份注入"那一档暂时只有 img2img 可用。</li>
+<li>⬜ L3 LoRA：未做（要云训，本机 8G 训不了）。</li>
+</ul>
+<hr />
+<h2>六、本轮改了哪些代码</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>改了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lvs/imagegen.py</code></td>
+<td>新增 <code>upload_image()</code>；<code>generate(ref_image=…)</code>；<code>REF_IMAGE</code>/<code>DENOISE</code> 占位符；两条互斥检查（模板要图却没有 → 报错；给了图模板用不上 → 报错）</td>
+</tr>
+<tr>
+<td><code>workflows/zimage_scene_ref.json</code></td>
+<td><strong>新增</strong>（img2img 模板）</td>
+</tr>
+<tr>
+<td><code>lvs/assets.py</code></td>
+<td>新增 <code>_reference_for()</code> / <code>_report_reference_plan()</code>；<code>_workflow_for()</code> 改为"先取图再选模板"；<code>ref_denoise</code> 接线</td>
+</tr>
+<tr>
+<td><code>lvs/qc.py</code></td>
+<td>人脸检测不可用时<strong>明说</strong>；抽出唯一的 <code>_make_face_detector()</code>（原先两处各判一遍）</td>
+</tr>
+<tr>
+<td><code>lvs/doctor.py</code></td>
+<td>新增两项检查：<code>定妆批准</code>（有候选未批准）、<code>人脸检测</code>（能不能加载）</td>
+</tr>
+<tr>
+<td><code>config.example.toml</code></td>
+<td><code>ref_denoise</code> 新键；<code>ref_workflow</code> / <code>face_model</code> 的说明改成事实</td>
+</tr>
+<tr>
+<td>测试</td>
+<td><code>tests/test_reference_image.py</code>（19 例，含<strong>模板占位符守则</strong>）+ <code>test_asset_sources.py</code> 判据组（9 例）</td>
+</tr>
+</tbody>
+</table>
+</div></body></html>

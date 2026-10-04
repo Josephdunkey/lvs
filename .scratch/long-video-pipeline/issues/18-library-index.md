@@ -4,7 +4,7 @@
 
 **Blocked by:** 09
 
-**Status:** in-progress —— 索引与检索已完成并测试；`lvs assets` 内的"翻库优先"接入待票据 09
+**Status:** done
 
 已完成（`lvs/library.py` + `tests/test_library.py`）：
 - [x] 素材库未配置（`dirs` 为空或目录不存在）时**静默跳过**（`lvs library index` 打印提示、退出 0；不产生索引）
@@ -20,3 +20,18 @@
 - [ ] 在 `lvs assets` 中按 §8.1 顺序插入"翻库优先"，命中落到 `assets/library/` 并写 `library_asset`/`resolved_by`
 - [ ] `source=library` 未命中时只标记该 shot 失败，其余继续
 - [ ] 缩略图/尺寸读取失败的 entry 降级但仍可用（当前为 None，需在 assets 侧确认可消费）
+
+---
+
+## Comments
+
+**What was built:** 本地素材库的索引、检索与「翻库优先」命中（`lvs/library.py` + `lvs/assets.py`）。
+
+**交付记录**
+- 解析优先级（spec §8.1）已在 `lvs/assets.py::resolve_shot` 落实：① `library_asset` 钉死 → ② `source=library`（未命中即标记失败）→ ③ 允许翻库时命中 → ④ 走 source 分支
+- 命中落到 `assets/library/shot-NNN.<ext>`，写回 `library_asset` 与 `resolved_by=library`
+- **绝不改原文件**：优先 `os.link` 硬链接（同盘、零拷贝、不动原文件），失败退回复制（单测断言 mtime/size 不变）
+- 素材库未配置/目录不存在 → `lvs assets` **静默跳过**该步，流程与没这功能时一致
+- 尺寸/时长探测失败降级为 `None`，entry 仍可用
+- `min_score` 可调；构造「擦边」用例断言不误命中
+- 索引缓存在 `.work/_library/`，跨任务复用，`--reindex` 强制重建

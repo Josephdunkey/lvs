@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 接口契约</title>
+<style>
+  :root { --fg:#1f2328; --line:#d0d7de; --code-bg:#f6f8fa; --accent:#0969da;
+           --warn-bg:#fff8c5; --warn-line:#d4a72c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f6f8fa; color:var(--fg);
+          font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+          font-size:16px; line-height:1.75; }
+  .page { max-width:940px; margin:0 auto; background:#fff;
+           padding:56px 64px 96px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size:27px; margin:0 0 8px; }
+  h2 { font-size:21px; margin:40px 0 12px; padding-bottom:8px;
+        border-bottom:1px solid var(--line); }
+  h3 { font-size:17px; margin:24px 0 8px; }
+  code { background:var(--code-bg); padding:2px 6px; border-radius:5px;
+          font-family:Consolas,monospace; font-size:14px; }
+  pre { background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+         padding:14px 16px; overflow-x:auto; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:15px; }
+  th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); }
+  blockquote { margin:14px 0; padding:12px 16px; background:var(--warn-bg);
+                border-left:4px solid var(--warn-line); border-radius:0 6px 6px 0; }
+  blockquote p { margin:6px 0; }
+  hr { border:none; border-top:1px solid var(--line); margin:34px 0; }
+  a { color:var(--accent); }
+  @media print { body { background:#fff; } .page { box-shadow:none; padding:0; max-width:none; } }
+</style></head><body><div class="page">
+<h1>Agent 接口契约</h1>
+<blockquote>
+<p>面向"<strong>让 agent 直接驱动流水线</strong>"这件事：你（人）跟 agent 说"拿我这份拍摄稿出片"，
+agent 自己把 parse → shots → assets → voice → build 跑完。</p>
+<p>这份文档写清 agent 需要知道的<strong>全部约定</strong>。<code>tests/test_agent_contract.py</code> 守着它。</p>
+</blockquote>
+<hr />
+<h2>一、整体形状：agent 与门禁的握手</h2>
+<p>流水线有 <strong>G0–G5 六道人审门禁</strong>。这跟"全自动"不矛盾 —— 门禁不是障碍，
+而是 agent <strong>向人确认的固定时机</strong>：</p>
+<pre><code>agent: lvs doctor --json                → 环境行不行（不行就先修）
+agent: lvs parse &lt;稿&gt; --task X          → 建立任务
+agent: lvs run &lt;稿&gt; --task X            → 跑到第一道门，退出码 3
+       （此时 gate --json 告诉它&quot;下一道门是 G0，产物已就绪&quot;）
+agent: 把产物指给你看 → 你说&quot;行&quot;
+agent: lvs gate --task X --approve G0 --note &quot;用户确认&quot;
+agent: lvs run &lt;稿&gt; --task X            → 从原地继续，跑到下一道门
+       ...重复直到成片
+</code></pre>
+<p><strong>关键</strong>：<code>lvs run</code> 的语义是"<strong>跑到下一道门为止</strong>"，不是一次跑完。
+重跑同一条命令即可续跑（已完成阶段自动跳过）。所以 agent 的循环很短：</p>
+<pre><code>while 退出码 == 3:                       # 3 = 等人审
+    看 board --json 得到 next_stage
+    把门禁要看的产物给用户
+    用户同意 → gate --approve
+    再 run 一次
+</code></pre>
+<hr />
+<h2>二、退出码：agent 的<strong>唯一</strong>跨进程信号</h2>
+<pre><code>0  成功
+1  跑完了，但有失败件（逐镜隔离：某几镜没取到素材/没合出音）—— 可继续
+2  输入/配置/前置不对 —— 改完再来（**别自动重试**）
+3  被人审门禁拦住 —— **等人做决定，不是错误**
+</code></pre>
+<p><code>2</code> 与 <code>3</code> 必须分开，否则 agent 分不清"该等用户"还是"该报警"。
+（有 <code>--json</code> 时，同一个数值也在 <code>exit_code</code> 字段里。）</p>
+<hr />
+<h2>三、<code>--json</code> 契约</h2>
+<h3>3.1 哪些命令有</h3>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th><code>--json</code></th>
+<th>输出形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>parse</code> <code>shots</code> <code>assets</code> <code>voice</code> <code>build</code> <code>run</code></td>
+<td>✅</td>
+<td>散文在前，<strong>信封是最后一段</strong></td>
+</tr>
+<tr>
+<td><code>gate</code></td>
+<td>✅</td>
+<td>干净 JSON</td>
+</tr>
+<tr>
+<td><code>qc</code></td>
+<td>✅</td>
+<td>干净 JSON</td>
+</tr>
+<tr>
+<td><code>styles</code></td>
+<td>✅</td>
+<td>干净 JSON</td>
+</tr>
+<tr>
+<td><code>board</code></td>
+<td>✅</td>
+<td><strong>干净 JSON</strong>（进度 + <code>next_stage</code>）</td>
+</tr>
+<tr>
+<td><code>doctor</code></td>
+<td>✅</td>
+<td><strong>干净 JSON</strong>（体检项数组）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong><code>board</code> / <code>doctor</code> 的 <code>--json</code> 在 2026-10-03 之前根本不存在</strong> ——
+<code>doctor.run(as_json=…)</code> 早就实现了，但 CLI 从来没传过。
+如果你在旧版本上跑，agent 就没法机器可读地问"到哪了 / 环境行不行"。</p>
+</blockquote>
+<h3>3.2 两种形态，判据不同</h3>
+<p><strong>A. 阶段命令（parse/shots/assets/voice/build/run）—— "取最后那段 JSON"</strong></p>
+<p>它们的散文照旧打在前面（"素材 12/64"、进度条），<strong>信封在最后</strong>。
+agent 的做法：从输出<strong>末尾往前</strong>找第一个能解析成 dict 的 <code>{</code>。</p>
+<blockquote>
+<p>⚠️ 别直接 <code>json.loads(整个 stdout)</code> —— 会失败。也别"找第一个 <code>{</code>"：
+提示词里真的有花括号槽位名（<code>{SAIGYO}</code>），会误判。</p>
+</blockquote>
+<p><strong>B. 查询命令（gate/board/doctor/qc/styles）—— "整个 stdout 就是一个 JSON"</strong></p>
+<p>直接 <code>json.loads(stdout)</code>。</p>
+<p><strong>信封里锁定的 5 个决策字段</strong>（<code>lvs/result.py</code> 声明，测试守着）：</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: false,
+  &quot;status&quot;: &quot;blocked&quot;,
+  &quot;exit_code&quot;: 3,
+  &quot;counts&quot;: {&quot;total&quot;: 0, &quot;done&quot;: 0, &quot;skipped&quot;: 0, &quot;failed&quot;: 0},
+  &quot;next_hint&quot;: &quot;…给 agent 的下一步提示…&quot;
+}
+</code></pre>
+<p>其余字段可自由扩展，这 5 个不许改名/删。</p>
+<hr />
+<h2>四、<code>gate --json</code>：agent 决定下一步的依据</h2>
+<p>最有用的一条。它直接告诉你<strong>下一道门是什么、要不要动</strong>：</p>
+<pre><code class="language-json">{
+  &quot;task&quot;: &quot;UGE01&quot;,
+  &quot;next&quot;: {
+    &quot;id&quot;: &quot;G0&quot;,
+    &quot;key&quot;: &quot;script&quot;,
+    &quot;state&quot;: &quot;pending&quot;,
+    &quot;ready&quot;: true,
+    &quot;criterion_ok&quot;: true,
+    &quot;stage_hint&quot;: &quot;把拍摄稿放进来（并跑 `lvs parse` 建立任务）&quot;,
+    &quot;action_hint&quot;: &quot;产物已就绪（1 个文件）—— 审完再放行：lvs gate --task UGE01 --approve G0 --note \&quot;…\&quot;&quot;
+  },
+  &quot;all_open&quot;: false
+}
+</code></pre>
+<ul>
+<li><code>next.id</code> —— 卡在哪道门</li>
+<li><code>state</code> —— <code>pending</code>（还没审）/ <code>stale</code>（产物变了，批准失效）/ <code>rejected</code>（被打回）</li>
+<li><code>ready</code> —— 产物齐了没有</li>
+<li><code>criterion_ok</code> —— <strong>自动判据</strong>过没过（门禁 = 人批准 <strong>且</strong> 自动判据）</li>
+<li><code>action_hint</code> —— 可直接抄的命令</li>
+</ul>
+<hr />
+<h2>五、<code>board --json</code>：进度与下一步</h2>
+<pre><code class="language-json">{
+  &quot;task&quot;: &quot;UGE01&quot;,
+  &quot;stages&quot;: [{&quot;stage&quot;: &quot;parse&quot;, &quot;label&quot;: &quot;解析&quot;, &quot;status&quot;: &quot;done&quot;, &quot;done&quot;: 0, &quot;total&quot;: 0, &quot;detail&quot;: &quot;正文 20 段&quot;}],
+  &quot;stages_done&quot;: [&quot;parse&quot;],
+  &quot;stages_todo&quot;: [&quot;shots&quot;, &quot;assets&quot;, &quot;voice&quot;, &quot;build&quot;],
+  &quot;next_stage&quot;: &quot;shots&quot;,
+  &quot;shots&quot;: {&quot;total&quot;: 0, &quot;ready&quot;: 0, &quot;failed&quot;: 0, &quot;by_source&quot;: {}}
+}
+</code></pre>
+<p><code>next_stage</code> 就是"下一步该跑哪个阶段"，不用解析中文看板。</p>
+<hr />
+<h2>六、<code>doctor --json</code>：开跑前的体检</h2>
+<p>返回<strong>数组</strong>，每项 <code>{name, status, detail, hint}</code>，<code>status ∈ {通过, 警告, 缺失}</code>。</p>
+<pre><code class="language-json">[{&quot;name&quot;: &quot;Python&quot;, &quot;status&quot;: &quot;通过&quot;, &quot;detail&quot;: &quot;3.13.12&quot;, &quot;hint&quot;: &quot;&quot;},
+ {&quot;name&quot;: &quot;定妆批准&quot;, &quot;status&quot;: &quot;警告&quot;, &quot;detail&quot;: &quot;5 个角色有候选图但一个都没批准&quot;, &quot;hint&quot;: &quot;…&quot;}]
+</code></pre>
+<p>退出码：有 <code>缺失</code> → <code>1</code>，否则 <code>0</code>。</p>
+<p>agent 应该<strong>先跑它</strong>：很多"跑一半才炸"的事这里就能提前发现
+（缺 Pexels key / 定妆没批准 / 人脸模型不可用 / ComfyUI 不通）。</p>
+<hr />
+<h2>七、一条完整例子（真实任务形状）</h2>
+<pre><code class="language-powershell">$P = &quot;.venv\Scripts\python.exe&quot;
+$C = &quot;config.雨月物语.toml&quot;          # ★ 一本书一份 config，见下
+
+# 0) 体检（agent 先看这个）
+&amp; $P -m lvs doctor --json
+&amp; $P -m lvs doctor --config $C
+
+# 1) 建任务 + 跑
+&amp; $P -m lvs parse &quot;&lt;拍摄稿.md&gt;&quot; --task UGE01 --config $C
+&amp; $P -m lvs run   &quot;&lt;拍摄稿.md&gt;&quot; --task UGE01 --config $C
+#   → 退出码 3，卡在 G0
+
+# 2) 问门禁
+&amp; $P -m lvs gate --task UGE01 --config $C --json
+#   → next.id = &quot;G0&quot;，action_hint 里有现成命令
+
+# 3) 用户确认后放行，再跑（每道门重复）
+&amp; $P -m lvs gate --task UGE01 --config $C --approve G0 --note &quot;稿子看过了&quot;
+&amp; $P -m lvs run  &quot;&lt;拍摄稿.md&gt;&quot; --task UGE01 --config $C
+
+# 4) 任何时候问进度
+&amp; $P -m lvs board --task UGE01 --config $C --json
+</code></pre>
+<p><strong>成片</strong>：<code>.work/&lt;任务名&gt;/final.mp4</code></p>
+<hr />
+<h2>八、agent 最该知道的五件事</h2>
+<ol>
+<li><strong><code>lvs run</code> = 跑到下一道门</strong>，不是跑完。重跑即续跑。</li>
+<li><strong>一本书一份 config</strong>。<code>config.toml</code> 的 <code>[paths].lib</code> 指向哪本书是<strong>固定</strong>的，
+   跑别的书必须 <code>--config config.&lt;书名&gt;.toml</code>（没有就 <code>lvs init</code> 生成）。
+   不给就会<strong>串库</strong>：拿另一本书的定妆库去配这一本的槽位。</li>
+<li><strong>打回/跳过必须写 <code>--note</code></strong>。跳过是显式越权（<code>--skip</code>），理由要留痕。</li>
+<li><strong><code>--skip-gates</code> 等于放弃人审</strong> —— 只在"急着看个大概"时用，不能当默认。</li>
+<li><strong>GPU 互斥</strong>：<code>assets</code>（生图）与 <code>voice</code>（本地 TTS）不能同时开
+   （8GB 显存装不下）。<code>guard</code> 会拦并说明关哪个。</li>
+</ol>
+<hr />
+<h2>九、目前<strong>不能</strong>自动化的地方（诚实列出）</h2>
+<table>
+<thead>
+<tr>
+<th>卡点</th>
+<th>现状</th>
+<th>绕过</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>门禁要人点头</strong></td>
+<td>设计如此</td>
+<td>agent 把产物给用户看 → 用户说行 → agent approve</td>
+</tr>
+<tr>
+<td><strong>定妆批准</strong></td>
+<td><code>lvs cast --approve</code> 要人看候选图</td>
+<td>同上：把 <code>_审阅表.png</code> 给用户看</td>
+</tr>
+<tr>
+<td><strong><code>cast</code> 没有 <code>--json</code></strong></td>
+<td>只能读散文</td>
+<td>暂无（候选：加 <code>--json</code>）</td>
+</tr>
+<tr>
+<td><strong><code>library</code> / <code>image</code> / <code>clean</code> 没有 <code>--json</code></strong></td>
+<td>同上</td>
+<td>暂无</td>
+</tr>
+<tr>
+<td><strong>人脸巡检不可用</strong></td>
+<td><code>[qc].face_model]</code> 那个权重是坏的</td>
+<td>见 <code>docs/一致性现状核对.md</code> 第四节</td>
+</tr>
+</tbody>
+</table>
+<p>前两条不是缺陷，是<strong>设计的护栏</strong>：几百镜的代价太高，不给人点头就往下跑是错的。</p>
+</div></body></html>

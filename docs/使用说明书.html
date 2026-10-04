@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LongVideoStudio 使用说明书</title>
+<style>
+  :root { --fg:#1f2328; --muted:#57606a; --line:#d0d7de; --bg:#ffffff;
+           --code-bg:#f6f8fa; --accent:#0969da; --warn-bg:#fff8c5; --warn-line:#d4a72c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f6f8fa; color:var(--fg);
+          font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+          font-size:16px; line-height:1.75; }
+  .page { max-width:860px; margin:0 auto; background:var(--bg);
+           padding:56px 64px 96px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size:30px; font-weight:600; margin:0 0 8px; }
+  h2 { font-size:23px; font-weight:600; margin:44px 0 12px; padding-bottom:8px;
+        border-bottom:1px solid var(--line); }
+  h3 { font-size:18px; font-weight:600; margin:30px 0 10px; }
+  h4 { font-size:16px; font-weight:600; margin:22px 0 8px; }
+  p, li { font-size:16px; }
+  code { background:var(--code-bg); padding:2px 6px; border-radius:5px;
+          font-family:Consolas,"Courier New",monospace; font-size:14px; }
+  pre { background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+         padding:14px 16px; overflow-x:auto; }
+  pre code { background:none; padding:0; font-size:14px; line-height:1.6; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:15px; }
+  th, td { border:1px solid var(--line); padding:8px 12px; text-align:left;
+            vertical-align:top; }
+  th { background:var(--code-bg); font-weight:600; }
+  blockquote { margin:14px 0; padding:12px 16px; background:var(--warn-bg);
+                border-left:4px solid var(--warn-line); border-radius:0 6px 6px 0; }
+  blockquote p { margin:6px 0; }
+  hr { border:none; border-top:1px solid var(--line); margin:36px 0; }
+  a { color:var(--accent); }
+  @media print { body { background:#fff; } .page { box-shadow:none; padding:0; max-width:none; } }
+</style>
+</head>
+<body>
+<div class="page">
+<h1 id="longvideostudio">LongVideoStudio 使用说明书</h1>
+<blockquote>
+<p>写给<strong>没用过命令行</strong>的人。
+不需要懂编程。按顺序照做就行 —— 每一步都告诉你「会看到什么」和「报错了看哪里」。</p>
+</blockquote>
+<hr />
+<h2 id="0">第 0 章 这东西到底是干嘛的</h2>
+<p><strong>一句话</strong>：你把写好的文字稿交给它，它自动做成一条<strong>带画面、有旁白、有字幕的视频</strong>。</p>
+<p>打个比方，它像一条<strong>自动厨房的流水线</strong>：</p>
+<pre><code>你写好菜谱（稿子）  →  它切成一道道工序  →  每道工序做出半成品  →  最后装盘（成片 mp4）
+</code></pre>
+<p>它替你干的四件事：</p>
+<table>
+<thead>
+<tr>
+<th>工序</th>
+<th>它做什么</th>
+<th>你要做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 拆镜</td>
+<td>把稿子切成一个个"镜头"，每个镜头配一句话和一张图的意思</td>
+<td>写好稿子</td>
+</tr>
+<tr>
+<td>② 配画面</td>
+<td>给每个镜头找图（从你的图片文件夹找，或自己画）</td>
+<td>准备图片</td>
+</tr>
+<tr>
+<td>③ 配音</td>
+<td>把旁白读出来，生成音频和字幕</td>
+<td>基本不用管</td>
+</tr>
+<tr>
+<td>④ 合成</td>
+<td>把图 + 声音 + 字幕拼成一个 mp4</td>
+<td>基本不用管</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键理解</strong>：它不是"点一下出大片"。它是一条<strong>流水线</strong> —— 每一道工序都会把半成品<strong>存到硬盘上</strong>。所以：</p>
+<ul>
+<li>中途断了、电脑关了，<strong>下次接着跑，不用从头</strong>；</li>
+<li>任何一步不满意，你可以<strong>只重做那一步</strong>；</li>
+<li>每个半成品你都能打开看（图片、音频、字幕、分镜表都是普通文件）。</li>
+</ul>
+<hr />
+<h2 id="1">第 1 章 先说清楚：它能做什么、不能做什么</h2>
+<h3 id="_1">能</h3>
+<ul>
+<li>一集视频从文字稿一路做到 <code>final.mp4</code></li>
+<li>断点续跑（中断了不用重来）</li>
+<li>每一步产物都能看、能改、能单独重做</li>
+<li>一次做多集（每集一个"任务名"，互不干扰）</li>
+</ul>
+<h3 id="_2">要注意（这些是真话，别踩）</h3>
+<table>
+<thead>
+<tr>
+<th>现实</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>要慢</strong></td>
+<td>如果让它自己画图，一张图约 20 秒。一集 200 个镜头 ≈ 1 小时以上。用你自己的图片就快得多</td>
+</tr>
+<tr>
+<td><strong>显卡有上限</strong></td>
+<td>8GB 显存（比如 RTX 4060 笔记本）<strong>不能同时</strong>跑"自己画图"和"本地配音"，两者抢显存。用免费的联网配音（edge）就没这问题</td>
+</tr>
+<tr>
+<td><strong>画面质量取决于素材</strong></td>
+<td>它找的图来自你的图片文件夹；文件夹里没有合适的图，它就找不到</td>
+</tr>
+<tr>
+<td><strong>版权你自己负责</strong></td>
+<td>用别人的图片、音乐之前，请自行确认授权</td>
+</tr>
+<tr>
+<td><strong>不做字幕翻译、不做剪辑特效</strong></td>
+<td>它只做"图 + 旁白 + 字幕"这条线</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2">第 2 章 三条路线，按你的条件挑一条</h2>
+<p>先挑路线，再往下看对应的章节。<strong>建议从 A 开始</strong>（1 分钟，什么都不用准备）。</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>需要准备什么</th>
+<th>能得到什么</th>
+<th>大概耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. 先看看效果</strong></td>
+<td>什么都不用</td>
+<td>一条 11 秒的示例片（画面是色块，只为证明流程通）</td>
+<td><strong>1 分钟</strong></td>
+</tr>
+<tr>
+<td><strong>B. 做出你自己的成片</strong> ⭐</td>
+<td>① 一份稿子 ② 一个放图片的文件夹</td>
+<td><strong>有画面、有真人配音、有字幕的成片</strong>（不需要 API key，不需要显卡）</td>
+<td>十几分钟</td>
+</tr>
+<tr>
+<td><strong>C. 全自动出图</strong></td>
+<td>上面全部 + 一个 AI 画图的 key（或本地 ComfyUI）</td>
+<td>不用自己准备图，它按文字自动画</td>
+<td>1 小时以上</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⭐ <strong>路线 B 是最划算的</strong>：不用花钱、不用显卡，就能做出真能看的成片。本手册会用最大篇幅讲它（第 5 章）。</p>
+<p>路线 A 走完就知道"我这边环境是好的"；路线 C 属于进阶，见第 8 章。</p>
+</blockquote>
+<hr />
+<h2 id="3">第 3 章 把它装好（第一次用才需要）</h2>
+<h3 id="31">3.1 你需要一台电脑</h3>
+<ul>
+<li><strong>Windows 10/11</strong>（本手册以 Windows 为例）</li>
+<li>装好 <strong>Python 3.10 或更新</strong>（<a href="https://www.python.org/downloads/">python.org</a> 下载，安装时<strong>勾选 "Add Python to PATH"</strong>）</li>
+</ul>
+<h3 id="32">3.2 打开"命令行"</h3>
+<p>别怕，它就是<strong>打字的窗口</strong>。</p>
+<ul>
+<li>按 <code>Win</code> 键 → 输入 <code>powershell</code> → 回车</li>
+<li>会跳出一个黑框框，光标在闪 —— 这就是我们要的地方</li>
+</ul>
+<p><strong>怎么算"成功输入了一条命令"</strong>：敲完按回车，等一下，屏幕上有字出来 = 成功。</p>
+<h3 id="33">3.3 把程序装到你的电脑上</h3>
+<p>把项目文件夹放到一个<strong>路径里没有空格</strong>的地方，比如 <code>D:\LongVideoStudio</code>。</p>
+<p>然后在命令行里，<strong>一行一行</strong>敲（每行按回车，等它跑完再敲下一行）：</p>
+<pre><code class="language-powershell">cd D:\LongVideoStudio                        # 进入项目文件夹（改成你自己的实际路径）
+
+python -m venv .venv                         # 建一个独立环境（约 30 秒）
+
+.venv\Scripts\python.exe -m pip install -e &quot;.[tts,http]&quot;    # 装依赖（约 1 分钟）
+
+copy config.example.toml config.toml         # 把配置模板复制成你的配置
+</code></pre>
+<blockquote>
+<p><strong>为什么要 <code>.venv</code></strong>：给这个项目一个"独立的工具箱"，不和你电脑上别的 Python 项目打架。</p>
+</blockquote>
+<h3 id="34">3.4 做个"体检"，确认装好了</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs doctor
+</code></pre>
+<p><strong>你会看到</strong>（大意）：</p>
+<pre><code>LongVideoStudio 环境体检  (lvs 0.1.0)
+------------------------------------------------------------
+[通过] Python：3.12.7
+[通过] ffmpeg：ffmpeg version 7.1
+[警告] ffprobe：未找到（…降级解析，精度足够）
+[缺失] LLM key：app.openai_api_key 未填写
+[警告] ComfyUI：未启动
+------------------------------------------------------------
+</code></pre>
+<p><strong>怎么看这份报告</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>标记</th>
+<th>含义</th>
+<th>要做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[通过]</code></td>
+<td>好</td>
+<td>不用管</td>
+</tr>
+<tr>
+<td><code>[警告]</code></td>
+<td>没它也<strong>能跑</strong>，只是某些功能少一点</td>
+<td>一般可以先不管</td>
+</tr>
+<tr>
+<td><code>[缺失]</code></td>
+<td>缺了它某个功能<strong>用不了</strong></td>
+<td>看它下面的 <code>↳</code> 提示怎么做</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>看到 "LLM key 未填写" 不用慌</strong> —— 那是路线 C 才要的东西。路线 A 和 B 都不需要。</p>
+<p><strong>看到 "ComfyUI 未启动" 也不用慌</strong> —— 那只是"自己画图"功能没开。</p>
+<p>如果以后嫌 <code>.venv\Scripts\python.exe -m lvs</code> 太长：项目里有个 <code>scripts\lvs.cmd</code>，
+把它所在目录加进系统的 PATH，之后直接敲 <code>lvs</code> 就行。</p>
+</blockquote>
+<hr />
+<h2 id="4-a-1">第 4 章 第一次跑通（路线 A，约 1 分钟）</h2>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs run --demo
+</code></pre>
+<p><strong>你会看到</strong>（节选）：</p>
+<pre><code>演示模式（走路骨架）：无需 LLM / Pexels / ComfyUI
+
+=== voice · 配音与字幕 ===
+配音完成：合成 3，跳过 0，失败 0
+
+=== build · 合成成片 ===
+合成完成：…\.work\DEMO\final.mp4
+  画面轨 11.3s｜旁白 11.3s｜成片 11.2s（偏差 0.04s）
+  字幕：已烧录
+</code></pre>
+<p><strong>打开看看</strong>：</p>
+<pre><code class="language-powershell">start .work\DEMO\final.mp4
+</code></pre>
+<p>会弹出一个 11 秒的视频（画面是几个色块 + 有声音 + 有字幕）。</p>
+<blockquote>
+<p>✅ <strong>看到视频 = 你的环境没问题</strong>，可以进入下一章了。</p>
+<p>这一步<strong>不需要</strong>网络、不需要 key、不需要显卡。它只是用 3 个占位画面"走一遍流程"。</p>
+</blockquote>
+<hr />
+<h2 id="5-b">第 5 章 做出你自己的第一集（路线 B，重点章节）</h2>
+<p>一共 6 步。<strong>别跳步</strong>，每步都往下看"会看到什么"。</p>
+<hr />
+<h3 id="1_1">第 1 步：写一份稿子</h3>
+<p>建一个文件，比如 <code>D:\我的视频\我的稿.md</code>（<code>.md</code> 是普通文本文件，用记事本也能编）。</p>
+<p><strong>最小可用的模板</strong>（照这个格式写，<code>##</code> 和 <code>[画面位]</code> 是它认的标记）：</p>
+<pre><code class="language-markdown"># 001-我的第一集 拍摄稿
+
+## 一、传达层
+
+**【标题】**
+&gt; 我的第一集
+
+**【冷开场】**（0:00–0:08，从最戏剧的一刻切入）
+&gt; 那天，我终于动手了。
+
+---
+
+## 二、正文讲稿
+
+### 【① 开头】0:00–0:08
+
+那天，我终于动手了。
+
+[画面位] [场景] 一片安静的草地，清晨的光
+
+### 【② 过程】0:08–0:18
+
+过程比想象中难。
+
+[画面位] [场景] 桌上的笔记本，摊开着
+</code></pre>
+<p><strong>三个规矩</strong>：</p>
+<ol>
+<li>每段用 <code>### 【① 名字】开始时间–结束时间</code> 开头</li>
+<li><strong>要说的话直接写</strong>（它会读成旁白）</li>
+<li><strong>要什么画面</strong>写在 <code>[画面位]</code> 那一行 —— <strong>这一行最重要</strong>，它决定去你文件夹里找哪张图</li>
+</ol>
+<hr />
+<h3 id="2_1">第 2 步：准备图片文件夹（<strong>命名是关键</strong>）</h3>
+<p>建一个文件夹，比如 <code>D:\我的视频\图片</code>，把你手头的照片/图片放进去。</p>
+<blockquote>
+<p><strong>最重要的规矩：图片的文件名要包含"画面里有什么"的词。</strong></p>
+<p>它就是<strong>靠文件名去猜</strong>哪张图配哪个镜头的。名字没意义的图，它认不出来。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>✅ 好名字</th>
+<th>❌ 白瞎</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>草地.png</code></td>
+<td><code>IMG_20231001.jpg</code></td>
+<td>镜头写"一片安静的<strong>草地</strong>"，<code>草地</code> 命中</td>
+</tr>
+<tr>
+<td><code>清晨的光.jpg</code></td>
+<td><code>DSC_0042.jpg</code></td>
+<td>镜头写"<strong>清晨的光</strong>"，命中</td>
+</tr>
+<tr>
+<td><code>笔记本.png</code></td>
+<td><code>微信图片_20231001.png</code></td>
+<td>镜头写"桌上<strong>的笔记本</strong>"，命中</td>
+</tr>
+</tbody>
+</table>
+<p><strong>文件夹本身的名字也算</strong>（比如放在 <code>清晨\</code> 文件夹里的图，都算带"清晨"这个词）。</p>
+<blockquote>
+<p>💡 想给一张图加更多关键词、又不想改名？在图片旁边放一个<strong>同名 <code>.txt</code></strong>，
+里面一行一个词。例如 <code>IMG_001.jpg</code> 旁边放 <code>IMG_001.txt</code>，内容：
+<code>草地
+清晨
+安静</code>
+这张图就会被当成"同时有这三个词"。</p>
+</blockquote>
+<hr />
+<h3 id="3_1">第 3 步：告诉它图片在哪</h3>
+<p>打开 <code>config.toml</code>（用记事本），找到 <code>[library]</code> 这一段，改成你的文件夹：</p>
+<pre><code class="language-toml">[library]
+dirs = [&quot;D:\\我的视频\\图片&quot;]     # ← 改成你的路径。注意：Windows 路径里的 \ 要写成 \\
+recursive = true
+min_score = 1
+</code></pre>
+<p>同时在同一个文件里，确认配音用的是<strong>免费联网</strong>的那种：</p>
+<pre><code class="language-toml">[tts]
+backend = &quot;edge&quot;                 # edge = 免费、联网、不用 key
+voice = &quot;zh-CN-YunxiNeural&quot;      # 男声。想要女声改成 zh-CN-XiaoxiaoNeural
+
+[voice]
+align = &quot;estimate&quot;               # 用估算的方式对齐字幕（不用装额外的语音识别）
+</code></pre>
+<blockquote>
+<p>⚠️ <strong>路径要写双反斜杠</strong> <code>\\</code>。<code>D:\我的视频\图片</code> 是对的写法，写单斜杠会报错。</p>
+</blockquote>
+<hr />
+<h3 id="4">第 4 步：让它先"认一遍"你的图片</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs library
+</code></pre>
+<p><strong>你会看到</strong>：</p>
+<pre><code>  - D:\我的视频\图片
+  产物：…\.work\_library\library-index.json
+  分布：image 24
+</code></pre>
+<p><code>image 24</code> = 认到 24 张图。<strong>数字是 0 就要检查路径写对没有。</strong></p>
+<hr />
+<h3 id="5-parse">第 5 步：把稿子读进来（parse）</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs parse &quot;D:\我的视频\我的稿.md&quot; --task 我的第一集
+</code></pre>
+<blockquote>
+<p><code>--task 我的第一集</code> 是<strong>给这一集起的名字</strong>。所有半成品会存在 <code>.work\我的第一集\</code> 里。
+名字随你起，但<strong>前后要一致</strong>。</p>
+</blockquote>
+<p><strong>你会看到</strong>：</p>
+<pre><code>  分镜：2 个
+  画面位清单：2 条
+  产物：…\.work\我的第一集\parse.json
+</code></pre>
+<hr />
+<h3 id="6-shots">第 6 步：拆成一个个镜头（shots）</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs shots --task 我的第一集 --no-llm --source library
+</code></pre>
+<p><strong>你会看到</strong>：</p>
+<pre><code>  产物：…\.work\我的第一集\shots.json
+  [note] 未使用 LLM（已指定 --no-llm）：…prompt/keywords/source 为启发式结果
+</code></pre>
+<blockquote>
+<p><strong><code>--no-llm</code></strong> = 不花钱、不用 key，用简单的规则拆。
+<strong><code>--source library</code></strong> = 画面一律从你的图片文件夹找。</p>
+<p>💡 这一步产出的 <code>shots.json</code> 是<strong>你能手动改的表</strong>。如果某个镜头找错图了，
+打开它，找到那一镜，把 <code>library_asset</code> 填成某张图的完整路径 —— 它就是你要的那张。
+（这是官方设计的用法，不是"违规操作"。）</p>
+</blockquote>
+<hr />
+<h3 id="7-assets">第 7 步：开始找图（assets）⭐ 最容易卡的一步</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs assets --task 我的第一集 --source library
+</code></pre>
+<p><strong>成功的样子</strong>：</p>
+<pre><code>素材获取完成：新取 3，跳过 0，失败 0（共 3 镜）
+  来源：library 3
+</code></pre>
+<p><strong>如果有镜头失败</strong>，它会告诉你<strong>为什么</strong>，比如：</p>
+<pre><code>失败明细（前 10）：
+  - shot 001：素材库没找到匹配的图（关键词：我的第一）
+      两个办法：① 把图片改名为包含这些关键词（如「草地.png」）；
+                ② 或配好 LLM key 让拆镜给出更好的关键词
+</code></pre>
+<p><strong>怎么办？</strong> 三个办法，从简单到麻烦：</p>
+<ol>
+<li><strong>改名</strong>：把某张图改名成含那个关键词的名字（比如加一张 <code>我的第一.jpg</code>）</li>
+<li><strong>手动指定</strong>：打开 <code>shots.json</code>，给这一镜的 <code>library_asset</code> 填上一张图的路径</li>
+<li><strong>跳过它</strong>：让这一镜当"空镜"，等下合成时用纯色底</li>
+</ol>
+<blockquote>
+<p>失败<strong>不可怕</strong>，它会把成功的镜都保留。改好之后<strong>重跑同一条命令</strong>，
+成功的会自动跳过，只补失败的（这叫"幂等"，是你的朋友）。</p>
+</blockquote>
+<hr />
+<h3 id="8-voice">第 8 步：配音 + 字幕（voice）</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs voice --task 我的第一集
+</code></pre>
+<p><strong>你会看到</strong>：</p>
+<pre><code>配音完成：合成 3，跳过 0，失败 0
+  整轨：…\.work\我的第一集\audio\narration.mp3（8.6s）
+  字幕：…\.work\我的第一集\subtitle.srt（3 行）
+</code></pre>
+<blockquote>
+<p>这一步<strong>需要联网</strong>（用的是微软的免费语音合成）。没网会失败。</p>
+</blockquote>
+<hr />
+<h3 id="9-build">第 9 步：拼成成片（build）</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs build --task 我的第一集
+</code></pre>
+<p><strong>你会看到</strong>：</p>
+<pre><code>合成完成：…\.work\我的第一集\final.mp4
+  画面轨 8.6s｜旁白 8.7s｜成片 8.6s（偏差 0.03s）
+  字幕：已烧录
+</code></pre>
+<p><strong>打开看</strong>：</p>
+<pre><code class="language-powershell">start .work\我的第一集\final.mp4
+</code></pre>
+<p>🎉 <strong>有画面、有旁白、有字幕的成片，出来了。</strong></p>
+<hr />
+<h3 id="_3">以后再做新的一集</h3>
+<p>重复第 1～9 步，<strong>只把 <code>--task</code> 换个新名字</strong>即可。</p>
+<p>如果嫌一条条敲麻烦，第 5～9 步可以合并成一条：</p>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs run &quot;D:\我的视频\我的第二集.md&quot; --task 我的第二集 --no-llm --source library
+</code></pre>
+<hr />
+<h2 id="6">第 6 章 那六个"关卡"是什么</h2>
+<p>跑 <code>lvs run</code> 的时候，你可能会遇到它<strong>停下来</strong>，说"等审批"：</p>
+<pre><code>▶ 下一道要过的门：G0·拍摄稿 —— 结构 / 否定式 / 人物槽位
+</code></pre>
+<p><strong>这是什么？</strong> 它给你设了 <strong>6 道人工确认关卡</strong>，目的是<strong>别让你白跑几小时</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>关卡</th>
+<th>名字</th>
+<th>它在问什么</th>
+<th>为什么值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G0</td>
+<td>拍摄稿</td>
+<td>稿子写对了吗？</td>
+<td>稿子错一个字，后面几百张图全白做</td>
+</tr>
+<tr>
+<td>G1</td>
+<td>分镜与提示词</td>
+<td>切出来的镜头对不对？</td>
+<td>跑之前先看一眼，比跑完再看便宜</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>定妆参考</td>
+<td>人物的脸定下来了吗？</td>
+<td>脸没定，跨镜头就会"变脸"</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>分镜图与巡检</td>
+<td>这几百张图有没有整批崩？</td>
+<td><strong>最贵的一步</strong>，要边跑边查</td>
+</tr>
+<tr>
+<td>G4</td>
+<td>配音与字幕</td>
+<td>音画对得上吗？</td>
+<td>合成完再返工最贵</td>
+</tr>
+<tr>
+<td>G5</td>
+<td>成片</td>
+<td>能交付了吗？</td>
+<td>最后一关</td>
+</tr>
+</tbody>
+</table>
+<p><strong>怎么过？</strong></p>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs gate --task 我的第一集              # 看现在卡在哪
+.venv\Scripts\python.exe -m lvs gate --task 我的第一集 --approve G0 --note &quot;看过了，没问题&quot;
+</code></pre>
+<ul>
+<li>觉得不行就打回：<code>--reject G0 --note "第三段要重写"</code></li>
+<li>这道门对本次不适用：<code>--skip G0 --note "纯空镜集，没有人物槽位"</code></li>
+</ul>
+<blockquote>
+<p><strong><code>--note</code> 是必填的</strong>（打回和跳过时必须写原因）。别嫌麻烦 ——
+三天后的你，会感谢现在的你写了原因。</p>
+</blockquote>
+<p><strong>如果只是想快速试一下</strong>，可以在 <code>run</code> 后面加 <code>--skip-gates</code> 一次跑完（不推荐日常用，等于放弃了这些保护）。</p>
+<hr />
+<h2 id="7">第 7 章 出错了怎么办（对照表）</h2>
+<table>
+<thead>
+<tr>
+<th>你看到的</th>
+<th>什么意思</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>python</code> 不是内部或外部命令</td>
+<td>电脑不认 <code>python</code></td>
+<td>重装 Python，<strong>记得勾 "Add Python to PATH"</strong></td>
+</tr>
+<tr>
+<td><code>未找到 xxx 配置文件</code></td>
+<td>没有 <code>config.toml</code></td>
+<td>跑 <code>copy config.example.toml config.toml</code></td>
+</tr>
+<tr>
+<td><code>未找到 …parse.json。请先运行：lvs parse</code></td>
+<td>上一步没做</td>
+<td>按它说的先做上一步。<strong>它挺老实的，会告诉你缺什么</strong></td>
+</tr>
+<tr>
+<td><code>素材库没找到匹配的图</code></td>
+<td>图片文件名没含关键词</td>
+<td>见第 5 章第 7 步的三个办法</td>
+</tr>
+<tr>
+<td><code>ComfyUI 未启动或不可达</code></td>
+<td>它想"自己画图"，但你电脑上没开画图服务</td>
+<td>路线 B 不需要画图。<strong>看上面失败明细的第一行</strong>，真正的原因通常是"素材库没找到"</td>
+</tr>
+<tr>
+<td><code>Pexels key 未配置</code></td>
+<td>想从网上找图但没有 key</td>
+<td>路线 B 不需要。加 <code>--source library</code> 只用你的本地图片</td>
+</tr>
+<tr>
+<td><code>配音失败</code> / 卡在 voice</td>
+<td>多半是没网</td>
+<td>连上网重跑 <code>lvs voice --task 名字</code></td>
+</tr>
+<tr>
+<td><code>显存不足</code> / 卡死</td>
+<td>同时跑了画图和本地配音</td>
+<td>二选一：<code>[tts] backend = "edge"</code>（联网配音不占显存）</td>
+</tr>
+<tr>
+<td>成片是<strong>黑屏</strong></td>
+<td>画面没接上</td>
+<td>看它提示的"黑屏占比"。多半是 assets 有镜失败，重跑 <code>lvs assets</code></td>
+</tr>
+<tr>
+<td>成片<strong>没声音</strong></td>
+<td>配音没合进去</td>
+<td>确认 <code>[tts] backend</code> 不是 <code>silent</code>（那是静音测试用）</td>
+</tr>
+<tr>
+<td>跑到一半断了/关了电脑</td>
+<td>没事</td>
+<td><strong>重跑同一条命令</strong>，已完成的会跳过</td>
+</tr>
+<tr>
+<td><code>磁盘空间</code> 报错</td>
+<td>半成品占地</td>
+<td><code>lvs clean --all</code> 先看会删什么（默认<strong>不删</strong>），确认后加 <code>--yes</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">万能的排查三步</h3>
+<pre><code class="language-powershell">.venv\Scripts\python.exe -m lvs doctor --task 我的第一集    # 1. 环境有没有问题
+.venv\Scripts\python.exe -m lvs gate --task 我的第一集      # 2. 卡在哪一关
+.venv\Scripts\python.exe -m lvs board --task 我的第一集     # 3. 整体进度一览
+</code></pre>
+<hr />
+<h2 id="8">第 8 章 想做得更好（进阶，可选）</h2>
+<table>
+<thead>
+<tr>
+<th>想要</th>
+<th>做什么</th>
+<th>在哪配</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>画面更贴题</strong>（镜头关键词更聪明）</td>
+<td>配一个 AI 文本 key</td>
+<td><code>config.toml</code> 的 <code>[app] openai_api_key</code>，然后重跑 <code>lvs shots --task 名 --force</code></td>
+</tr>
+<tr>
+<td><strong>不用自己准备图，让它画</strong></td>
+<td>启动 ComfyUI（需显卡）</td>
+<td><code>config.toml</code> 的 <code>[comfyui]</code>；启动脚本 <code>scripts\start_comfyui.cmd</code></td>
+</tr>
+<tr>
+<td><strong>从网上找图</strong></td>
+<td>配 Pexels key</td>
+<td><code>config.toml</code> 的 <code>[pexels] api_key</code></td>
+</tr>
+<tr>
+<td><strong>换画面风格</strong></td>
+<td>看一眼有哪些可选</td>
+<td><code>lvs styles</code> 列出全部（30 个内置，按题材分组）</td>
+</tr>
+<tr>
+<td><strong>换个说话的声音</strong></td>
+<td>改配音音色</td>
+<td><code>[tts] voice = "zh-CN-XiaoxiaoNeural"</code>（女声）等</td>
+</tr>
+<tr>
+<td><strong>只重做某几个镜头</strong></td>
+<td>见下面「怎么改单独一个镜头」</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>看图/改图</strong></td>
+<td>开图形界面</td>
+<td><code>lvs gui</code>（浏览器里操作）</td>
+</tr>
+<tr>
+<td><strong>边做边问</strong></td>
+<td>交互向导</td>
+<td><code>lvs studio</code>，它会在关键处停下来问你</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">怎么改单独一个镜头</h3>
+<p><strong>情况一：它找错了图</strong>（最常见）</p>
+<ol>
+<li>打开 <code>.work\你的任务名\shots.json</code>（普通文本，记事本能开）</li>
+<li>找到那一镜（按 <code>"id":</code> 找），把 <code>"library_asset"</code> 改成你想要的那张图的完整路径：
+   <code>json
+   "library_asset": "D:\\我的视频\\图片\\正确的图.png"</code></li>
+<li>删掉它之前复制过去的那张（在 <code>.work\你的任务名\assets\library\</code> 里找 <code>shot-001.png</code> 这种名字）</li>
+<li>重跑 <code>lvs assets --task 你的任务名 --source library</code></li>
+</ol>
+<p><strong>情况二：整批都不满意，想全部重来</strong></p>
+<pre><code class="language-powershell">lvs assets --task 你的任务名 --source library --force
+</code></pre>
+<blockquote>
+<p>⚠️ <code>--force</code> 会<strong>全部重做</strong>（已成功的不再跳过），长任务慎用。</p>
+<p>⚠️ 常见的坑：<code>lvs assets --only</code> 的 <code>--only</code> 是筛<strong>素材来源</strong>（<code>pexels,local,graphic,library</code>），
+<strong>不是筛镜号</strong>。只有 <code>lvs qc --only</code> 才是按镜号筛（<code>--only 1-20,35</code>）。</p>
+</blockquote>
+<hr />
+<h2 id="9">第 9 章 名词表（听到这些词别懵）</h2>
+<table>
+<thead>
+<tr>
+<th>词</th>
+<th>大白话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>任务（task）</strong></td>
+<td>就是你给这一集起的名字，比如 <code>我的第一集</code>。所有半成品按它分文件夹</td>
+</tr>
+<tr>
+<td><strong>分镜（shot）</strong></td>
+<td>一个镜头。一段旁白 + 一张图</td>
+</tr>
+<tr>
+<td><strong>素材 / assets</strong></td>
+<td>每个镜头的画面（一张图或一段视频）</td>
+</tr>
+<tr>
+<td><strong>拆镜（shots 阶段）</strong></td>
+<td>把稿子切成一个个镜头</td>
+</tr>
+<tr>
+<td><strong>门禁（gate）</strong></td>
+<td>那 6 道人工确认关卡</td>
+</tr>
+<tr>
+<td><strong>幂等</strong></td>
+<td>"重跑不重复劳动"。已经做完的会跳过，只补没做完的</td>
+</tr>
+<tr>
+<td><strong>断点续跑</strong></td>
+<td>中断了，下次从断的地方接着跑</td>
+</tr>
+<tr>
+<td><strong>提示词（prompt）</strong></td>
+<td>给"自己画图"功能看的一句话描述。不用画图的话不用管它</td>
+</tr>
+<tr>
+<td><strong>ComfyUI</strong></td>
+<td>一个本地画图软件。"让它自己画图"时才会用到</td>
+</tr>
+<tr>
+<td><strong>ffmpeg</strong></td>
+<td>拼视频的工具。<strong>已经内置了，不用自己装</strong></td>
+</tr>
+<tr>
+<td><strong><code>.work</code> 文件夹</strong></td>
+<td>所有半成品都在这儿。删了不会丢你的原稿和图片，只是要重跑</td>
+</tr>
+<tr>
+<td><strong>silent / placeholder</strong></td>
+<td>两个"假"后端，用来测试流程。真做片别用</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10">第 10 章 命令速查</h2>
+<blockquote>
+<p>下面 <code>PY</code> 代表 <code>.venv\Scripts\python.exe</code>。如果你把 <code>scripts\lvs.cmd</code> 加进了 PATH，就把 <code>PY -m lvs</code> 换成 <code>lvs</code>。</p>
+</blockquote>
+<pre><code class="language-powershell"># ── 体检与查看 ──────────────────────────────
+PY -m lvs doctor                     # 环境体检
+PY -m lvs gate --task 名字            # 看流水线卡在哪一关
+PY -m lvs board --task 名字           # 进度看板
+PY -m lvs styles                     # 有哪些画面风格可选
+
+# ── 一次跑通 ────────────────────────────────
+PY -m lvs run --demo                                        # 演示（1 分钟，什么都不用）
+PY -m lvs run &quot;稿.md&quot; --task 名字 --no-llm --source library   # 用本地图片做真成片
+
+# ── 一步一步来 ──────────────────────────────
+PY -m lvs library                                     # 认一遍图片文件夹
+PY -m lvs parse &quot;稿.md&quot; --task 名字                    # 读稿
+PY -m lvs shots --task 名字 --no-llm --source library  # 拆镜
+PY -m lvs assets --task 名字 --source library          # 找图
+PY -m lvs voice --task 名字                            # 配音+字幕
+PY -m lvs build --task 名字                            # 拼成片
+
+# ── 调整 ────────────────────────────────────
+PY -m lvs shots --task 名字 --force            # 强制重拆镜（配了 LLM key 之后用）
+PY -m lvs assets --task 名字 --force           # 强制重新找图（长任务慎用，会全部重做）
+PY -m lvs qc --task 名字 --only 12,15-18       # 只巡检这几个镜（注意：这个是按**镜号**筛）
+PY -m lvs gate --task 名字 --approve G0 --note &quot;原因&quot;   # 过一道关卡
+PY -m lvs clean --all                          # 看看能清多少（默认不删）
+
+# ── 图形界面 ────────────────────────────────
+PY -m lvs gui        # 浏览器里点着用
+PY -m lvs studio     # 终端里一步步问你
+</code></pre>
+<hr />
+<h2 id="_6">附：一页纸的完整流程（可以贴墙上）</h2>
+<pre><code>准备：稿子(.md) + 一个装图片的文件夹（图片名要有意义的词）
+
+config.toml 改两处：
+    [library] dirs = [&quot;D:\\你的\\图片文件夹&quot;]
+    [tts]     backend = &quot;edge&quot;
+
+然后：
+
+  lvs doctor                       ← 体检（有 [缺失] 才需要处理）
+  lvs library                      ← 认图片（确认张数不为 0）
+  lvs parse 稿.md --task 名字       ← 读稿
+  lvs shots --task 名字 --no-llm --source library
+  lvs assets --task 名字 --source library     ← 失败了就按提示改名/指定
+  lvs voice --task 名字             ← 需要联网
+  lvs build --task 名字             ← 完成！成片在 .work\名字\final.mp4
+
+中途断了？重跑同一条命令就行，已完成的会跳过。
+</code></pre>
+</div>
+</body>
+</html>
