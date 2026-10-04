@@ -3,6 +3,7 @@
 子命令与流水线阶段一一对应（spec §7）：
 
     doctor   环境体检（已实现）
+    status   续跑摘要：一行一任务（门禁 / 产物 / 下一步）—— **续跑第一步跑这个**
     parse    解析拍摄稿 → parse.json
     shots    LLM 拆镜 + 提示词 → shots.json
     assets   素材获取（本地素材库 → Pexels / 本地生图）
@@ -117,6 +118,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不把含否定式的提示词交回 LLM 改写"
                         "（cfg=1.0 的蒸馏模型没有负向引导，否定词里的名词会被按字面画出来）")
     p.add_argument("--json", action="store_true", help="机器可读输出（统一结果信封，给 Agent 用）")
+    # 只读读口（S2）：不跑拆镜、不建任务目录，只把 shots.json 摘成几行。
+    p.add_argument("--peek", type=int, metavar="ID",
+                   help="只读：打印这一镜的摘要（约 300 token）")
+    p.add_argument("--index", action="store_true",
+                   help="只读：一镜一行全表（516 KB → 约 30 KB）")
+    p.add_argument("--index-width", type=int, default=40, metavar="N",
+                   help="--index 场景列的截断宽度（默认 40 字）")
+    p.add_argument("--index-limit", type=int, metavar="N", help="--index 只看前 N 镜")
+    p.add_argument("--full", action="store_true",
+                   help="--peek 打印提示词全文（默认截到 140 字）")
 
     p = sub.add_parser("assets", parents=[common], help="素材获取（本地素材库 → Pexels / 本地生图）")
     p.add_argument("--no-library", action="store_true", help="本次不翻找本地素材库")
@@ -312,6 +323,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note", metavar="TEXT", help="批准/打回/跳过的原因（打回与跳过必填）")
     p.add_argument("--by", metavar="WHO", help="谁批的（默认 user；Agent 代批时写 agent）")
     p.add_argument("--next", action="store_true", help="只打印「下一道该过的门」与要敲的命令")
+    p.add_argument("--json", action="store_true", help="机器可读输出（给 Agent 用）")
+
+    p = sub.add_parser(
+        "status", parents=[common],
+        help="续跑摘要：一行一任务（门禁 / 产物 / 下一步）—— 续跑第一步跑这个，别读 shots.json",
+    )
+    p.add_argument("--brief", action="store_true", default=True,
+                   help="只打表格（**默认行为**；≤8 行。写上是为了脚本自解释）")
+    p.add_argument("--legend", action="store_true", help="表格后追加列说明（给人看，不省 token）")
+    p.add_argument("--all", dest="show_all", action="store_true",
+                   help="列出全部任务（默认只看 UGE 前缀的雨月物语）")
+    p.add_argument("--prefix", default="UGE", help="只看某前缀的任务（默认 UGE）")
     p.add_argument("--json", action="store_true", help="机器可读输出（给 Agent 用）")
 
     return parser
@@ -516,6 +539,20 @@ def _debug_enabled() -> bool:
     return str(os.environ.get("LVS_DEBUG", "")).strip() not in ("", "0", "false", "False")
 
 
+def _shots_readonly(args: argparse.Namespace) -> bool:
+    """`shots --peek` / `shots --index` 是**只读读口**（S2）—— 不跑拆镜、不建任务目录、不记轨迹。
+
+    为什么单独抽成一个函数（2026-10-05 实测踩过）：`shots` 在
+    `_ENVELOPE_COMMANDS` 里，而那条路径会调 `stage.note_stage_end`。
+    于是“看一眼”就会：① 往 `logs/run-<date>.jsonl` 落一条 stage_end；
+    ② 把 `manifest.json` 的 mtime 顶到当前时间（假的“最近活动”）。
+    抽出来也好让测试直接钉住这条路由。
+    """
+    if getattr(args, "command", None) != "shots":
+        return False
+    return getattr(args, "peek", None) is not None or bool(getattr(args, "index", False))
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -546,6 +583,13 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"配置错误：{exc}", file=sys.stderr)
             config = Config.empty()
         return run_doctor(config, as_json=bool(getattr(args, "json", False)))
+
+    # status：续跑摘要（一行一任务）。**不需要配置文件** ——
+    # 它按任务前缀自己找 config，找不到也照样列（config 列打「≈」，提示 G2 指纹不可信）。
+    if args.command == "status":
+        from lvs import summary as summary_mod
+
+        return summary_mod.run_command(config_path, args)
 
     # 其余命令：必须能定位到配置
     if not config_path:
@@ -579,6 +623,11 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import migrate as migrate_mod
 
         return migrate_mod.run_command(config, None, args)
+
+    if _shots_readonly(args):
+        from lvs import shots as shots_mod
+
+        return shots_mod.run_command(config, Workspace.read(_resolve_task(args)), args)
 
     # board / cast / gate / styles：纯读取为主，不替当前目录建任务目录（票 23 验收项）
     if args.command in ("board", "cast", "gate", "styles"):

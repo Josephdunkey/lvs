@@ -828,7 +828,97 @@ def _warn_no_llm(shots: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+# ---- 只读读口（省 token 用）-------------------------------------------------
+#
+# 病根：`shots.json` 516 KB / 8 千行；agent 想知道"第 193 镜到底写了什么"，
+# 过去只能把整份读进上下文（≈ 20 万 token）。AGENTS.md 曾经只能写"禁止读" ——
+# 而"禁止"本身就是缺陷：人总要有一个读口。这两个函数就是那个读口：
+# 一个打**一镜**（peek），一个打**全表**（index，一镜一行）。
+
+
+def _duration_text(s: dict[str, Any]) -> str:
+    """这一镜有多长：优先用配音实测时长，其次 start/end 之差。"""
+    dur = s.get("audio_duration")
+    if isinstance(dur, (int, float)) and dur > 0:
+        return f"{float(dur):.1f}s"
+    start, end = s.get("start"), s.get("end")
+    if isinstance(start, (int, float)) and isinstance(end, (int, float)) and end >= start:
+        return f"{float(end) - float(start):.1f}s"
+    return "?s"
+
+
+def _shot_block(s: dict[str, Any], *, full: bool = False) -> str:
+    parts = [
+        f"#{s.get('id')}  {_duration_text(s)}  "
+        f"kind={s.get('kind') or '-'}  source={s.get('source') or '-'}  "
+        f"status={s.get('status') or '-'}"
+    ]
+    for label, key in (("场景", "scene"), ("提示词", "prompt"), ("旁白", "narration")):
+        value = str(s.get(key) or "").strip()
+        if not value:
+            continue
+        if key == "prompt" and not full and len(value) > PROMPT_PREVIEW:
+            value = f"{value[:PROMPT_PREVIEW]}…（看全文：`lvs shots --peek {s.get('id')} --full`）"
+        parts.append(f"{label}：{value}")
+    keywords = [str(k) for k in (s.get("keywords") or [])]
+    if keywords:
+        parts.append("检索词：" + ", ".join(keywords))
+    return "\n".join(parts)
+
+
+#: `--peek` 默认把提示词截到这么长：这个项目的提示词带风格后缀，单条就有 600+ 字符。
+#: 该不该改提示词，看开头就够了；真要逐字看全文，加 `--full`。
+PROMPT_PREVIEW = 140
+
+
+def peek_text(ws: Workspace, shot_id: int, *, full: bool = False) -> str:
+    """单个分镜的摘要（约 300 token）。镜号不存在时给一句提示，**不抛异常**。
+
+    默认把提示词截到 `PROMPT_PREVIEW` 字（并附一句怎么看全文）——
+    实测 #193 全量输出 788 字符，截断后约 310，而两者对“这一镜对不对”的判断力差别很小。
+    """
+    shots = ws.try_load_shots().get("shots") or []
+    for s in shots:
+        if int(s.get("id", -1)) == shot_id:
+            return _shot_block(s, full=full)
+    return f"没有镜 #{shot_id}（本任务共 {len(shots)} 镜；`lvs shots --index` 看全表）"
+
+
+def index_text(ws: Workspace, *, width: int = 40, limit: int | None = None) -> str:
+    """一镜一行（516 KB → 约 30 KB）。
+
+    只打"挑镜要看的列"：镜号 / 时长 / kind / source / 场景（截断）。
+    提示词与旁白**不在这里** —— 那两样用 `peek_text` 单取一镜，别整份读。
+    """
+    shots = ws.try_load_shots().get("shots") or []
+    if not shots:
+        return "（没有 shots.json）先跑：lvs shots --task <任务名>"
+    rows: list[str] = []
+    for s in shots:
+        scene = " ".join(str(s.get("scene") or s.get("visual") or "").split())
+        if width > 0 and len(scene) > width:
+            scene = scene[: width - 1] + "…"
+        rows.append(
+            f"{int(s.get('id', 0)):>4} {_duration_text(s):>7} "
+            f"{(s.get('kind') or '-'):<7} {(s.get('source') or '-'):<8} {scene}"
+        )
+    if limit is not None:
+        rows = rows[: int(limit)]
+    return "\n".join(rows)
+
+
 def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
+    # 只读读口（S2）：`--peek N` / `--index` 不跑拆镜、不读 parse.json、不碰门禁，
+    # 只是把 516 KB 的 shots.json 摘成几行。
+    peek = getattr(args, "peek", None)
+    if peek is not None:
+        print(peek_text(ws, int(peek), full=bool(getattr(args, "full", False))))
+        return 0
+    if getattr(args, "index", False):
+        print(index_text(ws, width=int(getattr(args, "index_width", 40) or 40),
+                         limit=getattr(args, "index_limit", None)))
+        return 0
+
     parse_path = ws.path("parse.json")
     if not parse_path.is_file():
         print(f"未找到 {parse_path}。请先运行：lvs parse <拍摄稿.md> --task {ws.task}")
