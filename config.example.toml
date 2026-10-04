@@ -7,18 +7,129 @@
 [app]
 # 拆镜 / 提示词用的 LLM（沿用 MoneyPrinterTurbo 的 OpenAI 兼容接口约定）
 llm_provider = "openai"
-openai_api_key = ""                              # ← 必填：你的 DeepSeek / OpenAI key
+openai_api_key = ""                              # ← 拆镜阶段必填：你的 DeepSeek / OpenAI key
 openai_base_url = "https://api.deepseek.com/v1"
 openai_model_name = "deepseek-chat"
 
+[paths]
+# ---- 项目素材库根（多项目支持的核心）----
+# 一本书 / 一个题材一个素材库，目录结构由拆书技能（newmuyu）定义，各项目同构：
+#   00-设定/（风格、定妆卡）  01-素材卡/  04-图片素材/  05-拍摄稿/  06-分镜提示词/  07-成片/  _cast/
+#
+# 配了它之后，这些路径**自动派生**，不用逐个填：
+#   - 定妆库       → <lib>/_cast
+#   - 定妆卡       → <lib>/00-设定/*定妆卡*.md（只有一份时自动认；多份会提示你指定）
+#   - 项目风格文件 → <lib>/00-设定/风格预设.toml
+#
+# ★ 换项目只需要换这一个路径（或用 `--config` 指一份项目 config）。
+#   接入新项目：`lvs init "<素材库路径>" --name <项目名>`
+lib = ""
+
 [pexels]
-api_key = ""                                     # ← 用 pexels 素材时必填
+api_key = ""                                     # ← 用 pexels 素材时必填（免费申请）
 
 [tts]
-# backend: edge（一期，免费联网） | openai_speech（二期，指向本地 Qwen3-TTS）
+# backend 可选：
+#   edge           微软 edge-tts（联网，免费，有词边界时间戳）—— 默认
+#   openai_speech  本地模型（吃显存，需先启动服务）
+#   silent         纯 ffmpeg 静音轨（离线，按字数估时长）—— 供离线端到端测试
+# backend: edge（一期，免费联网，带词边界时间戳） | openai_speech（指向本地 Qwen3-TTS）
 backend = "edge"
-voice = "zh-CN-YunxiNeural"                      # edge 音色名
+voice = "zh-CN-YunxiNeural"                      # edge 音色名（如 zh-CN-XiaoxiaoNeural）
 base_url = "http://127.0.0.1:8000"               # backend=openai_speech 时的服务地址
+rate = "+0%"                                     # edge 语速（-50% ~ +100%）
+volume = "+0%"
+# 时间戳粒度：WordBoundary（推荐，字幕更准）| SentenceBoundary
+boundary = "WordBoundary"
+
+[voice]
+gap = 0.3                                        # 镜间静音（秒）
+subtitle_max_chars = 18                          # 单行字幕字数上限
+# ---- 强制对齐（本地 TTS 不返回词边界，靠 whisper 对齐出精确字幕）----
+# 需 faster-whisper（pip install faster-whisper）。
+# device=auto 会**优先探测 CUDA**：medium 单镜 CPU 579s / GPU 6.4s（差 90 倍）。
+# 显存不够时自动回落 CPU/int8（宁慢勿断）。显式写 "cpu" 可强制省显存。
+align = "auto"                                   # auto（默认）| estimate（纯按字数估算，跳过对齐）
+whisper_size = "medium"                          # tiny/base/small/medium/large-v3；中文 medium 起才可用
+whisper_device = "auto"                          # auto（优先 GPU）| cuda | cpu
+
+[shots]
+# 画面模式（也可用 `lvs shots --visual` / `lvs run --visual` 临时覆盖）：
+#   graphic = 图文图表感（默认）：图表/文字类 beat 不进生图，交给图表渲染器
+#   photo   = 实拍剧照感：所有 beat 都翻译成可拍场景，一律走生图（信息会丢，观感统一）
+visual_mode = "graphic"
+
+# 「图」按什么粒度出 —— ★ **必选，没有默认值**
+#   shot = 每镜一张：分镜有多细就出多少张，保留「远景→近景→特写」的镜头推进
+#   beat = 同一画面位只出一张，其余镜复制它：省算力，观感更「静」、更像插图铺陈
+#
+# ★ 为什么**不给默认值**：这个选择直接决定成片观感，代价还差 3 倍算力 ——
+#   让程序替你决定，等于把一个创作决定混进默认配置里，你不会发现。
+#   所以 `lvs assets` / `lvs run` 在**真有分歧时**（有画面位跨了多个镜）
+#   会停下并问你，退出码 2。
+#
+# 数字参考（实测《雨月物语》白峰，435 镜）：shot ≈ 390 张 / 3.9 小时；
+# beat ≈ 110 张 / 1.1 小时。平均一条画面位铺 3.9 镜。
+#
+# ⚠ 改完必须**重跑**那条命令 —— 配置只在进程启动时读一次，
+#   边跑边改不会生效（实测踩过：改了没重启，一镜一张白跑一小时）。
+# image_granularity = "shot"
+# image_granularity = "beat"
+
+# 实拍镜的素材来源策略（也可用 `lvs shots|assets|run|studio --source` 临时覆盖）：
+#   auto    = 自动判定（默认）：LLM 逐镜决定，先翻本地素材库再下载/生图
+#   pexels  = 一律从 Pexels 下载
+#   local   = 一律本地生图（ComfyUI）
+#   library = 一律用本地素材库；库里没命中就自动回退本地生图
+# 只影响实拍镜：图文/图表 beat 仍由本地排版渲染，手工钉死的镜也不受影响。
+source_mode = "auto"
+
+# 画面风格（也可用 `lvs shots|run --style NAME` 临时覆盖）：
+#   `lvs styles` 列出全部内置预设（30 个，按题材分组、标注是否单色）；
+#   `lvs styles --json` 给 Agent 选风格用。
+# 各风格的 `monochrome` 标记会决定 `lvs qc` 要不要查彩度 ——
+# 「必须纯黑白」是**风格属性**，不是流水线常数。
+style = "historical-documentary"
+
+# 项目级风格文件（TOML）。留空 = 自动找 <素材库>/00-设定/风格预设.toml。
+# 优先级：--style-file > 本项 > config [styles.*] 内联 > 内置预设。
+style_file = ""
+
+[build]
+kenburns = "zoom-in"                             # zoom-in | zoom-out | pan-right | pan-up | none
+zoom_amount = 0.15                               # 推拉幅度（0.1 ≈ 轻微）
+kenburns_supersample = 2                         # 抗抖：zoompan 超采样倍数（1=旧行为，上限 4）
+short_asset = "loop"                             # 素材短于分镜时：loop（循环）| freeze（定格）
+# 字幕样式（libass force_style；字体需系统已装）
+subtitle_style = "FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=42,Alignment=2"
+# ---- 成片终检（整片才有的故障，逐片段查不出来）----
+# 音轨存在性是**硬检查**（没音轨直接判失败）；
+# 下面两条是**警告**（有声书式全黑配图是合法风格，所以只报不拦）。
+# 探测读不到就跳过 —— 宁可不报，也不要因工具环境问题拦下一部好片。
+sanity_min_mean_db = -60.0                       # 平均音量低于此值判"整片近乎静音"
+sanity_black_ratio_max = 0.8                     # 黑屏占比超过此值判"整片基本是黑的"
+
+[bgm]
+# ---- 背景音乐（可选，混在旁白之下的低音量垫底）----
+# 留空 = 不加（默认）。填音频文件路径（mp3/wav/m4a 均可）。
+# BGM 会**循环铺满旁白总时长**，首尾自动淡入淡出。
+#
+# ★ 设计原则（参考 NarratoAI 等同类工具）：
+#   - BGM 是锦上添花 —— 混音失败（文件损坏/编码器缺失）会**自动退回无 BGM 版本**
+#     并打印原因，绝不毁掉整部成片；
+#   - 旁白永远是主角：固定低音量垫底，不做闪避（sidechain duck 参数调优地狱，没必要）。
+file = ""                                          # 例：D:\\素材库\\BGM\\夜的钢琴曲.mp3
+volume = 0.25                                      # BGM 音量（0–1；0.25 ≈ 只听得见氛围）
+fade_in = 2.0                                      # 淡入秒数（0 = 关闭）
+fade_out = 3.0                                     # 淡出秒数（0 = 关闭）
+
+[gpu]
+# 8 GB 显存下，本地生图与本地 TTS 不能同时驻留（spec §11）。
+# 冲突判定靠**探测对端服务**（TTS 的 /health、ComfyUI 的 /system_stats），
+# 不靠显存数字——ComfyUI 常驻后"空闲显存"自然变低，那不代表冲突。
+skip_check = false                               # 换大显存卡 / 服务器时设 true
+need_imagegen_mb = 6000                          # 生图阶段：低于此值只**告警**，不阻断
+need_tts_mb = 4600                               # 本地 TTS 阶段：低于此值**硬报错**
 
 [library]
 # 本地素材库（可后续指定）。为空列表 = 关闭"翻库优先"功能，流程照常。
@@ -28,4 +139,157 @@ recursive = true
 min_score = 1                                    # 关键词命中阈值
 
 [comfyui]
-base_url = "http://127.0.0.1:8188"               # 本地生图宿主（二期）
+# 本地生图（ComfyUI）。启动：双击 scripts\start_comfyui.cmd（首次约需 1-2 分钟加载）
+# backend = "placeholder" 时**不连 ComfyUI**，用 ffmpeg 造占位图 ——
+# 供离线端到端测试（`tests/test_e2e_offline.py`）。默认 "comfyui"。
+backend = "comfyui"
+base_url = "http://127.0.0.1:8188"
+workflow = "zimage_turbo.json"                   # workflows/ 下的模板（备用：sdxl.json）
+model = "z_image_turbo_int8_convrot.safetensors" # 主力 Z-Image Turbo 的 UNET（SDXL 备用：sd_xl_base_1.0.safetensors）
+clip = "qwen_3_4b_fp8_mixed.safetensors"         # Z-Image 文本编码器（Qwen3-4B，CLIPLoader type=lumina2）
+vae = "ae.safetensors"                           # Z-Image 的 VAE（Flux ae）
+seed = 42                                        # 每镜 seed = seed + shot_id（可复现）
+# ---- 以下是可选覆盖项（尺寸/批量/负向提示词）----
+# width = 1344
+# height = 768
+# batch = 1
+# negative = "text, watermark, signature, blurry, low quality"
+# 注意：采样器/步数/cfg/shift 等**模型专用参数固定在 workflows/<模板>.json 里**（D11），
+#       要调就改模板文件；换模型 = 换模板 + 改上面的 workflow / model / clip / vae。
+
+[cast]
+# ---- 定妆库（v2 · 出图闸门 G2）----
+# 为什么要有它：角色一致性不能靠提示词祈祷。先生成并冻结角色参考图，之后所有分镜引用它。
+# `assets` 阶段会拒绝执行 —— 只要本集出现的人物 state != REF。宁可现在停 30 秒。
+#
+# 三态：IMG（只有提示词）/ PLAN（还没给图）/ REF（图已核验，**唯一可绑定**）
+#
+# 流程：
+#   lvs cast --task NW01 --extract      # 从拍摄稿抓 {NAME} 槽位 + 定妆卡抓锚定描述
+#   lvs cast --render NAOKO             # 出候选定妆照 → cast/NAOKO/v1/cand-*.png
+#   lvs cast --approve NAOKO            # 审阅通过 → 冻结为 ref-01.png，写进 lock.json
+#   lvs cast --reject NAOKO --note "脸太圆"   # 打回（移入 _rejected/，不删）
+dir = ""                                         # 定妆库目录；留空 = 仓库根 cast/。
+                                                 # 想跨集共享就指到书的 `_cast`，如
+                                                 #   dir = "D://素材库//某本书//10-语料//知识视频素材库//_cast"
+card = ""                                        # 定妆卡路径（人写的 md，含锚定描述）。
+                                                 # 支持两种写法：```json 里的 characters，或
+                                                 # `### 角色名` 小节 + `锚定描述：` 后的代码块
+workflow = ""                                    # 定妆照工作流模板；留空 = 用 [comfyui].workflow
+ref_workflow = ""                                # 场景图走参考图的 img2img 模板。项目自带
+                                                 # `zimage_scene_ref.json`（LoadImage → VAEEncode →
+                                                 # KSampler → VAEDecode）。填上它 = 开启 **L2 图像锚定**：
+                                                 # 该镜含 {NAME} 且该角色**已批准**时，用冻结定妆照当
+                                                 # 参考图（低去噪 img2img），比纯文字锚定更能稳住同一张脸。
+                                                 # 留空 = 一律文生图（= 只做 L1 文字锚定）。
+                                                 # 注意：定妆照是**方图 + 平光胸像**，而场景是横幅 ——
+                                                 # 模板里用中心裁切缩到场景尺寸，denoise 是唯一的"松紧"旋钮。
+ref_denoise = 0.55                               # img2img 去噪强度（0–1）。v2 方案给的起点区间是
+                                                 # 0.45–0.60：**太高换脸、太低换不出场景**。
+                                                 # 逐镜调这个值即可，不用改模板。
+width = 1024                                     # 定妆照尺寸（与场景图的 16:9 不同：定妆要看脸）
+height = 1024
+seed = 7777                                      # 候选起始 seed（逐张递增）
+framing = ""                                     # 覆盖定妆构图描述；留空用内置的「平光胸像、素背景」
+
+[qc]
+# ---- 生图巡检（v2 · 出图闸门 G3）----
+# 每 block 张自动查一次：完整性 / 彩度 / 人数 / 提示词版本。
+# 为什么必须定期：2026-10-01 实测 479 张图跑了 10 小时，跑完才发现整批提示词是旧版。
+block = 20                                       # 每块多少张（也可 `lvs qc --block N`）
+chroma_max = 5.0                                 # 彩度均值上限；超标即判「偶发彩色」
+                                                 # ★ 只在**单色风格**下生效 —— 判据来自
+                                                 # [shots].style 对应预设的 monochrome 标记
+                                                 # Z-Image 偶发整张彩色，加 --fix 会就地转灰度
+                                                 # 并把原图移进 assets/local/_fixed/
+fix_chroma = false                               # 默认只报不修；设 true 则巡检时自动转灰度
+face_model = ""                                  # Yunet 人脸权重（onnx）路径。留空则在仓库 models/yunet.onnx 找。
+                                                 # ★ 找不到（或权重坏了 / cv2 读不了）时，**不会静默跳过** ——
+                                                 # `lvs qc` 会明确打印"人脸检测不可用，Q006/Q007 没检查"，
+                                                 # `lvs doctor` 也会报出来并说明怎么修。
+                                                 # （实测踩过：配了一个权重退化的 onnx，于是「空镜长人」
+                                                 #  这条检查一次都没真正跑过，而报告看起来一切正常。）
+enable_faces = true                              # 关掉可省一点时间（每张多约 20ms）。
+                                                 # 关掉后 qc 不再提示"人脸检测不可用"（因为你明确不要它）
+
+[pipeline]
+# ---- 流水线门禁（v2 · 每个环节的人审闸门）----
+# 六道门：G0 拍摄稿 / G1 分镜与提示词 / G2 定妆参考 / G3 分镜图与巡检 /
+#         G4 配音与字幕 / G5 成片。
+#
+# 为什么默认开启：本项目 2026-10-01 实测 479 张图跑了 10 小时，
+# 跑完才发现整批用的是旧版提示词。问题不在模型，在于**没有任何一处强制"先看再跑"**。
+#
+# 门禁守的是"下一步要不要花钱"：拆镜花 LLM、出图花 GPU 小时、合成之后返工最贵。
+# 未批准就不放行（fail-closed）；批准时记下产物的**指纹**，
+# 产物事后被改动 → 门禁自动失效并要求重审（宁可让你重审一次，也不放过一版没人看过的产物）。
+#
+# 看状态：lvs gate --task <任务>
+# 批准：  lvs gate --task <任务> --approve G0 --note "看过了"
+# 跳过：  lvs gate --task <任务> --skip G3 --note "纯空镜集"（必须写原因）
+enforce = true                                   # 关掉它 = 放弃人审。要关请写清为什么。
+ledger = "gates.json"                            # 账本文件名（落在 .work/<任务>/ 下）
+
+# ---- 连续失败熔断（别在服务已经挂了之后还硬跑几百镜）----
+# `assets` / `voice` 逐镜处理，单镜失败只标记该镜、其余继续（这是对的）。
+# 但如果故障是**系统性**的（ComfyUI 没起来 / 显存被占 / TTS 掉线），
+# 每一镜都会失败，而流水线会**一镜一镜地失败到底** —— 654 镜就是 654 次超时。
+#
+# 「连续」这个信号说明问题不在单件、而在环境，到阈值就该停。
+# 中间成功一次即清零（偶发失败不会累积成假熔断）。
+# 0 = 关闭熔断（想跑完看全貌时用，不推荐）。
+max_consecutive_failures = 8
+
+# ---- 运行轨迹（logs/run-<日期>.jsonl）----
+# 长跑（654 镜 ≈ 数小时）崩了之后，靠它回答"哪一镜开始出问题、
+# 是不是同一类错误连着来、熔断停在第几镜"。一镜一行，约 100 KB / 集。
+# 纯追加快盘文件，不上框架、不起服务。关掉不影响任何行为。
+run_log = true
+
+[publish]
+# ---- 投稿物料（`lvs publish`）----
+# 成片出来 ≠ 能投稿：B站/抖音要的是**另一套东西**（带字封面、标题、简介、标签）。
+# 这条命令把"手写投稿文案 + 手工叠封面字"合并成一步。
+#
+# ★ 封面三行字**不在这里配**：一律取拍摄稿 `【封面文案】` 里的
+#   `行1：/行2：/行3：`（后面那条"画面建议"不会被当封面字）。
+#   稿子里写什么，封面上就是什么 —— 这就是"文字锚定"的 L1 原则。
+#   `lvs publish --lines "甲|乙|丙"` 可以临时覆盖。
+#
+# ★ 期号跟着**本期**走，不跟着书走：这份 config 是跟书绑定的，
+#   换一期忘了改 episode，简介里的"本期是系列第 N 期"就会带着上一期的号。
+episode = 1
+
+book_title = ""          # 书名（进版权行；留空 = 不写版权行）
+author = ""              # 作者
+translator = ""          # 译者（没有就留空）
+publisher = ""           # 出版方（可带年份）
+series = ""              # 合集名（如 "《雨月物语·春雨物语》"）；配了才会写"本期是第 N 期"
+category = "知识/人文历史"  # B站分区（只写进物料，不自动投稿）
+
+# 标签：手写的排最前；之后自动补书名/篇名 + 讲书/读书/文学，去重、上限 10 个、单个 ≤12 字。
+tags = []
+
+# 简介第二段：这是什么书 / 为什么值得看 / 系列钩子。留空则只有开场白 + 版权行。
+intro = ""
+
+# 画面来源声明（AI 自绘类内容投稿时建议保留；留空则不写这段）。
+image_note = "画面为 AI 自绘，非原著插图。"
+
+# 封面底图：留空 = 自动挑任务里**最后一张**已出画面；
+# 也可填具体图片路径，或临时用 `lvs publish --base <png>` 指定。
+# base_image = ""
+# 封面字体：留空 = 走 `graphic` 的默认字体链（微软雅黑 → 苹方 → 文泉驿…）。
+# font = ""
+
+[styles]
+# ---- 装机级的内联风格（可选）----
+# 写在这里的风格**只覆盖同名项**，优先级低于项目风格文件、高于内置预设。
+# 适合"本机常做某个题材"而在多处复用；**某一本书专属的风格请写进它的
+# <素材库>/00-设定/风格预设.toml**（风格是"这本书长什么样"的一部分，跟着素材走）。
+#
+# [styles.my-house-style]
+# desc = "我的常用风格"
+# tags = ["自定义"]
+# monochrome = false
+# suffix = "..."

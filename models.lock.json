@@ -1,0 +1,55 @@
+{
+  "_comment": "本地生图模型清单（票据 19）。权重不进 git，用 scripts/fetch_models.py 按本清单拉取。",
+  "_mirrors": {
+    "modelscope": "国内推荐，实测 ~5 MB/s",
+    "hf-mirror": "备用，实测 ~0.6 MB/s"
+  },
+  "source": "modelscope",
+  "comfyui_dir": "D:\\ComfyUI",
+  "models": {
+    "checkpoints": [
+      {
+        "name": "sd_xl_base_1.0.safetensors",
+        "repo": "AI-ModelScope/stable-diffusion-xl-base-1.0",
+        "hf_repo": "stabilityai/stable-diffusion-xl-base-1.0",
+        "file": "sd_xl_base_1.0.safetensors",
+        "approx_gb": 6.94,
+        "role": "backup",
+        "note": "SDXL 备用：生态最全、8G 显存最稳。单文件，CheckpointLoaderSimple 加载。"
+      }
+    ],
+    "diffusion_models": [
+      {
+        "name": "z_image_turbo_int8_convrot.safetensors",
+        "repo": "Comfy-Org/z_image_turbo",
+        "hf_repo": "Comfy-Org/z_image_turbo",
+        "file": "split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors",
+        "approx_gb": 6.2,
+        "role": "primary",
+        "note": "Z-Image Turbo 主力（int8 量化，8G 显存友好）。UNETLoader 加载。"
+      }
+    ],
+    "text_encoders": [
+      {
+        "name": "qwen_3_4b_fp8_mixed.safetensors",
+        "repo": "Comfy-Org/z_image_turbo",
+        "hf_repo": "Comfy-Org/z_image_turbo",
+        "file": "split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors",
+        "approx_gb": 5.63,
+        "role": "primary",
+        "note": "Z-Image 的文本编码器（Qwen3-4B，fp8）。CLIPLoader(type=lumina2) 加载（ZImage 继承 Lumina2；CLIPLoader 的类型列表里没有 z_image，靠权重自动识别 QWEN3_4B 走 z_image 分支）。"
+      }
+    ],
+    "vae": [
+      {
+        "name": "ae.safetensors",
+        "repo": "Comfy-Org/z_image_turbo",
+        "hf_repo": "Comfy-Org/z_image_turbo",
+        "file": "split_files/vae/ae.safetensors",
+        "approx_gb": 0.34,
+        "role": "primary",
+        "note": "Z-Image 的 VAE。"
+      }
+    ]
+  }
+}

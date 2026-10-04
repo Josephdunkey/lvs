@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}设置与体检 · LongVideoStudio{% endblock %}
+
+{% block main %}
+<div class="topbar">
+  <div>
+    <h1>设置与体检</h1>
+    <div class="sub">配置写回 <span class="mono">{{ config_path or 'config.toml' }}</span> · 注释会被保留（tomlkit 回写）</div>
+  </div>
+  <div class="actions"><button class="btn" onclick="loadDoctor()">重新体检</button></div>
+</div>
+
+<div class="body">
+  {% if config_error %}
+  <div class="card"><div class="pad" style="color:#c9a55f">配置读不到：{{ config_error }}</div></div>
+  {% endif %}
+
+  <div class="card">
+    <header>
+      <h2>可编辑配置</h2>
+      <button class="btn primary" onclick="saveConfig()">保存</button>
+    </header>
+    <div class="pad">
+      <div id="config-form"><span class="dim">正在读配置…</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <header><h2>环境体检</h2><span class="dim" id="doctor-hint"></span></header>
+    <div class="pad"><div id="doctor"><span class="dim">正在体检…</span></div></div>
+  </div>
+
+  <div class="card">
+    <header><h2>全部配置（密钥已遮蔽，其余只读）</h2></header>
+    <div class="pad">
+      {% if rows %}
+      <table>
+        <tbody>
+        {% for key, value in rows %}
+          <tr><td class="mono" style="width:38%;color:var(--fg-dim)">{{ key }}</td>
+              <td class="mono">{{ value }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="dim">没有可展示的配置项。</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+async function loadConfig() {
+  const box = document.getElementById('config-form');
+  try {
+    const data = await api('/api/config');
+    if (data.error) { box.innerHTML = `<span style="color:#c9a55f">${esc(data.error)}</span>`; return; }
+    box.innerHTML = Object.entries(data.fields).map(([key, f]) => {
+      const id = 'cfg-' + key.replace(/\./g, '-');
+      if (f.kind === 'dirs') {
+        const val = Array.isArray(f.value) ? f.value.join('\n') : (f.value || '');
+        return `<div class="field"><label for="${id}">${esc(f.label)}</label>
+          <textarea id="${id}" data-kind="dirs" data-key="${esc(key)}" rows="3">${esc(val)}</textarea>
+          <span class="hint">${esc(f.hint || '')}</span></div>`;
+      }
+      if (f.kind === 'choice') {
+        return `<div class="field" style="max-width:280px"><label for="${id}">${esc(f.label)}</label>
+          <select id="${id}" data-key="${esc(key)}">${f.choices.map((c) => `<option value="${esc(c)}" ${c === f.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>`;
+      }
+      if (f.kind === 'int') {
+        return `<div class="field" style="max-width:200px"><label for="${id}">${esc(f.label)}</label>
+          <input type="number" id="${id}" data-key="${esc(key)}" value="${esc(f.value ?? '')}"></div>`;
+      }
+      const isSecret = f.secret;
+      return `<div class="field"><label for="${id}">${esc(f.label)}</label>
+        <input type="${isSecret ? 'password' : 'text'}" id="${id}" data-key="${esc(key)}"
+               value="${esc(f.value)}" autocomplete="off"
+               placeholder="${isSecret ? '已设置（留空 = 不改）' : ''}">
+        ${f.secret ? '<span class="hint">密钥只显示头尾；要改就填新值，留空不动。</span>' : ''}</div>`;
+    }).join('');
+  } catch (e) { box.innerHTML = `<span style="color:#d4674e">${esc(e.message)}</span>`; }
+}
+
+async function saveConfig() {
+  const changes = {};
+  document.querySelectorAll('#config-form [data-key]').forEach((el) => {
+    const key = el.dataset.key;
+    if (el.dataset.kind === 'dirs') {
+      const lines = el.value.split('\n').map((s) => s.trim()).filter(Boolean);
+      changes[key] = lines;
+    } else if (el.type === 'password') {
+      if (el.value) changes[key] = el.value;      // 留空 = 不改
+    } else if (el.type === 'number') {
+      if (el.value !== '') changes[key] = Number(el.value);
+    } else {
+      changes[key] = el.value;
+    }
+  });
+  try {
+    const r = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) });
+    toast('已保存。改动对下一次跑阶段生效（子进程会重新读 config.toml）。');
+    loadConfig();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadDoctor() {
+  const box = document.getElementById('doctor');
+  box.innerHTML = '<span class="dim">正在体检…</span>';
+  try {
+    const data = await api('/api/doctor');
+    if (data.error) { box.innerHTML = `<span style="color:#c9a55f">${esc(data.error)}</span>`; return; }
+    const colour = { ok: 'tag ok', missing: 'tag', warn: 'tag warn' };
+    document.getElementById('doctor-hint').textContent =
+      `${data.checks.filter((c) => c.status === 'ok').length} / ${data.checks.length} 项就绪`;
+    box.innerHTML = `<table><tbody>${data.checks.map((c) => `
+      <tr>
+        <td style="width:150px"><span class="${colour[c.status] || 'tag'}">${esc(c.status || '?')}</span></td>
+        <td style="width:180px">${esc(c.name || '')}</td>
+        <td>${esc(c.detail || '')}
+          ${c.hint ? `<div class="dim" style="font-size:12px;margin-top:3px">${esc(c.hint)}</div>` : ''}
+        </td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch (e) { box.innerHTML = `<span style="color:#d4674e">${esc(e.message)}</span>`; }
+}
+
+loadConfig();
+loadDoctor();
+</script>
+{% endblock %}

@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ task.name }} · LongVideoStudio{% endblock %}
+
+{% block main %}
+<div class="topbar">
+  <div>
+    <h1>{{ task.name }}</h1>
+    <div class="sub">
+      {{ task.shots_total or '—' }} 个分镜
+      {%- if task.created_at %} · 建于 {{ task.created_at }}{% endif %}
+      {%- if task.final_duration %} · 成片 {{ task.final_duration|round(1) }} 秒{% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn primary" onclick="runAll()">一键到底</button>
+    <button class="btn ghost" onclick="stopJob()" id="btn-stop" hidden>停止</button>
+    <a class="btn" href="/task/{{ task.name }}#shots">分镜</a>
+    <a class="btn" href="/">返回任务</a>
+  </div>
+</div>
+
+<div class="body">
+
+  <div class="card">
+    <header>
+      <h2>流水线</h2>
+      <span class="dim" id="pipe-hint">点「运行」跑一个阶段；勾了「强制重做」会丢掉该阶段已有产物</span>
+    </header>
+    <div class="field" style="margin-bottom:14px">
+      <label for="src-mode">实拍镜的素材来源</label>
+      <select id="src-mode" onchange="onSourceChange()">
+        <option value="auto">自动判定（逐镜决定）</option>
+        <option value="pexels">下载实拍素材（Pexels）</option>
+        <option value="local">本地生图（ComfyUI）</option>
+        <option value="library">本地素材库（未命中回退生图）</option>
+      </select>
+      <span class="hint" id="src-hint">只影响实拍镜 —— 图文/图表卡片仍由本地排版渲染，手工钉死的镜也不受影响。</span>
+    </div>
+    <div class="pipe" id="pipe">
+      {% for s in task.stages %}
+      <div class="step {{ 'done' if s.finished else '' }}" data-stage="{{ s.name }}" id="step-{{ s.name }}">
+        <div class="h">
+          <b>{{ s.label }}</b>
+          <span class="st">{{ s.status }}</span>
+        </div>
+        {% if s.name in ('assets', 'voice', 'build') %}
+          <div class="prog nums">{{ s.done }}<small> / {{ s.total or '—' }}</small></div>
+          <div class="bar"><i style="width: {{ (100 * s.done / s.total)|round(0, 'floor') if s.total else 0 }}%"></i></div>
+        {% else %}
+          <div class="prog nums">{% if s.done %}就绪{% else %}—{% endif %}</div>
+          <div class="bar"><i style="width: {{ 100 if s.done else 0 }}%"></i></div>
+        {% endif %}
+        <div class="go">
+          <button class="btn tiny primary" onclick="runStage('{{ s.name }}')">运行</button>
+          {% if stage_spec.get(s.name) %}
+            <button class="btn tiny" onclick="openOptions('{{ s.name }}')">选项</button>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <header>
+      <h2>日志</h2>
+      <span class="dim mono" id="job-label">空闲</span>
+    </header>
+    <div class="pad">
+      <div class="log" id="log">还没有运行记录。</div>
+    </div>
+  </div>
+
+  {% if task.has_final %}
+  <div class="card">
+    <header>
+      <h2>成片</h2>
+      <span class="dim nums">{{ task.final_duration|round(1) if task.final_duration else '?' }} 秒</span>
+    </header>
+    <div class="pad">
+      <video controls preload="metadata"
+             src="/media/{{ task.name }}/final.mp4"></video>
+      <div style="margin-top:12px;display:flex;gap:10px">
+        <a class="btn tiny" href="/media/{{ task.name }}/final.mp4" download>下载</a>
+        <a class="btn tiny" href="/media/{{ task.name }}/subtitle.srt" target="_blank">字幕 SRT</a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card" id="shots">
+    <header>
+      <h2>分镜 <span class="dim nums" id="shot-count"></span></h2>
+      <div class="filters">
+        <input type="search" id="q" placeholder="搜旁白 / 提示词 / 镜号">
+        <select id="f-kind">
+          <option value="">全部类型</option>
+          <option value="graphic">图文卡片</option>
+          <option value="scene">实拍场景</option>
+        </select>
+        <select id="f-source">
+          <option value="">全部来源</option>
+          <option value="local">本地生图</option>
+          <option value="graphic">图文卡片</option>
+          <option value="pexels">Pexels</option>
+          <option value="library">素材库</option>
+        </select>
+        <label class="check" style="margin:0"><input type="checkbox" id="f-failed">只看失败</label>
+      </div>
+    </header>
+    <div class="pad">
+      <div class="grid" id="grid"><div class="empty">正在读分镜…</div></div>
+    </div>
+  </div>
+
+</div>
+
+<dialog id="dlg-opt">
+  <header id="opt-title">运行阶段</header>
+  <div class="pad" id="opt-body"></div>
+  <footer>
+    <button class="btn ghost" onclick="document.getElementById('dlg-opt').close()">取消</button>
+    <button class="btn primary" id="opt-go">开始</button>
+  </footer>
+</dialog>
+
+<dialog id="dlg-shot">
+  <header id="shot-title">分镜</header>
+  <div class="pad" id="shot-body"></div>
+  <footer>
+    <button class="btn ghost" onclick="document.getElementById('dlg-shot').close()">关闭</button>
+    <button class="btn" onclick="redoShot('again')">换一张（seed+1）</button>
+    <button class="btn primary" onclick="redoShot('save')">按这里的设置重做</button>
+  </footer>
+</dialog>
+{% endblock %}
+
+{% block script %}
+<script>
+const TASK = {{ task.name|tojson }};
+const STAGE_SPEC = {{ stage_spec|tojson }};
+const EDGE_FIELDS = {{ editable|tojson }};
+const SOURCE_MODE_SAVED = {{ task.source_mode|tojson }};
+</script>
+<script src="{{ url_for('static', filename='task.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,90 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Load Z-Image Turbo (int8)" },
+    "inputs": {
+      "unet_name": "{{CKPT}}",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "Load Qwen3-4B text encoder" },
+    "inputs": {
+      "clip_name": "{{CLIP}}",
+      "type": "lumina2",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load Flux VAE (ae)" },
+    "inputs": {
+      "vae_name": "{{VAE}}"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive prompt" },
+    "inputs": {
+      "clip": ["2", 0],
+      "text": "{{PROMPT}}"
+    }
+  },
+  "5": {
+    "class_type": "ConditioningZeroOut",
+    "_meta": { "title": "Negative (zeroed; cfg=1)" },
+    "inputs": {
+      "conditioning": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": { "title": "Sigma shift (Z-Image official = 3)" },
+    "inputs": {
+      "model": ["1", 0],
+      "shift": 3.0
+    }
+  },
+  "7": {
+    "class_type": "EmptySD3LatentImage",
+    "_meta": { "title": "Latent (16ch, /8)" },
+    "inputs": {
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "batch_size": "{{BATCH}}"
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "_meta": { "title": "Sample (Z-Image official: res_multistep / simple / 8 / cfg 1)" },
+    "inputs": {
+      "model": ["6", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["7", 0],
+      "seed": "{{SEED}}",
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "Decode" },
+    "inputs": {
+      "samples": ["8", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save" },
+    "inputs": {
+      "images": ["9", 0],
+      "filename_prefix": "{{PREFIX}}"
+    }
+  }
+}

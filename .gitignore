@@ -7,7 +7,19 @@ workflows/**/*.safetensors
 *.ckpt
 
 # 含密钥的本地配置（模板见 config.example.toml）
-config.toml
+#
+# ★ 为什么不是只写 `config.toml`（2026-10-04 安全审查实测）：
+#   仓库里同时躺着 `config.toml.bak-p2`、`config.ugetsu.toml`、`config.雨月物语.toml`，
+#   它们**都带着同一把真实的 openai_api_key**，而旧规则一个都没挡住 ——
+#   一次 `git add -A && git push` 就把密钥送出去了（那时再改 .gitignore 已经晚了，
+#   还得 rewrite 历史）。所以这里整族挡：config*.toml 一律不进 git，只留模板。
+config*.toml
+!config.example.toml
+
+# 备份文件：改配置前顺手 cp 出来的副本，同样带密钥
+*.bak
+*.bak-*
+*.orig
 
 # Python
 __pycache__/
@@ -22,3 +34,23 @@ venv/
 .vscode/
 Thumbs.db
 desktop.ini
+
+# 仓库根的调试产物：日志、临时图、试跑输出。
+# ★ 为什么要单独列：agent 续跑时会 rglob 全仓库找代码/文档，
+#   这些文件既不是源码也不是产物，却会被读进上下文**白烧 token**。
+*.log
+*.tmp
+build/
+outputs/
+covers/
+.demo/
+
+# 两个看着像 shell 转义出错留下的目录（`$t`），内容不明，先别进 git
+.t4$t/
+.tb$t/
+
+# agent 探针在仓库根留下的试跑图（2026-10-05 实测：test_face0/5.jpg、test_z0/1/2.jpg 共 5 张）
+test_*.jpg
+
+# 演示成片（14 MB，可由 .work 里的任务重跑生成；同目录 说明.md 仍进 git）
+docs/demo/*.mp4

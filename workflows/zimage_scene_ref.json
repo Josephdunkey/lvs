@@ -1,0 +1,107 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Load Z-Image Turbo (int8)" },
+    "inputs": {
+      "unet_name": "{{CKPT}}",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "Load Qwen3-4B text encoder" },
+    "inputs": {
+      "clip_name": "{{CLIP}}",
+      "type": "lumina2",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load Flux VAE (ae)" },
+    "inputs": {
+      "vae_name": "{{VAE}}"
+    }
+  },
+  "4": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "参考图（定妆照）—— 由 lvs 上传到 ComfyUI input/" },
+    "inputs": {
+      "image": "{{REF_IMAGE}}"
+    }
+  },
+  "5": {
+    "class_type": "ImageScale",
+    "_meta": { "title": "缩到场景尺寸（中心裁切，避免拉伸变形）" },
+    "inputs": {
+      "image": ["4", 0],
+      "upscale_method": "lanczos",
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "crop": "center"
+    }
+  },
+  "6": {
+    "class_type": "VAEEncode",
+    "_meta": { "title": "参考图 → latent（img2img 的起点）" },
+    "inputs": {
+      "pixels": ["5", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive prompt" },
+    "inputs": {
+      "clip": ["2", 0],
+      "text": "{{PROMPT}}"
+    }
+  },
+  "8": {
+    "class_type": "ConditioningZeroOut",
+    "_meta": { "title": "Negative (zeroed; cfg=1)" },
+    "inputs": {
+      "conditioning": ["7", 0]
+    }
+  },
+  "9": {
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": { "title": "Sigma shift (Z-Image official = 3)" },
+    "inputs": {
+      "model": ["1", 0],
+      "shift": 3.0
+    }
+  },
+  "10": {
+    "class_type": "KSampler",
+    "_meta": { "title": "Sample from the reference latent (denoise < 1 = 保留参考图结构)" },
+    "inputs": {
+      "model": ["9", 0],
+      "positive": ["7", 0],
+      "negative": ["8", 0],
+      "latent_image": ["6", 0],
+      "seed": "{{SEED}}",
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": "{{DENOISE}}"
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "Decode" },
+    "inputs": {
+      "samples": ["10", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "12": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save" },
+    "inputs": {
+      "images": ["11", 0],
+      "filename_prefix": "{{PREFIX}}"
+    }
+  }
+}

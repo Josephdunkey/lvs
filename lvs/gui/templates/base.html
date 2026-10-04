@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}LongVideoStudio{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+{% set path = request.path %}
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <span>LONG VIDEO STUDIO</span>
+      <div class="bar"></div>
+      <b>拍摄稿 → 成片</b>
+    </div>
+    <nav class="nav">
+      <a href="/" class="{{ 'on' if path == '/' else '' }}">任务</a>
+      <a href="/library" class="{{ 'on' if path.startswith('/library') else '' }}">素材库</a>
+      <a href="/settings" class="{{ 'on' if path.startswith('/settings') else '' }}">设置与体检</a>
+    </nav>
+    <div class="rail-foot">
+      只监听 127.0.0.1<br>
+      产物都在 <span class="mono">.work/</span>
+    </div>
+  </aside>
+  <div class="main">
+    {% block main %}{% endblock %}
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block script %}{% endblock %}
+</body>
+</html>

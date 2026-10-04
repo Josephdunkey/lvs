@@ -1,0 +1,69 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load SDXL checkpoint",
+      "note": "SDXL 备用模板：模型专用参数（dpmpp_2m/karras、25 步、cfg 7）写死在本模板内。切换方式：config.toml 的 [comfyui].workflow 改为 sdxl.json，并把 model 改为 sd_xl_base_1.0.safetensors。"
+    },
+    "inputs": {
+      "ckpt_name": "{{CKPT}}"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive prompt" },
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "{{PROMPT}}"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Negative prompt" },
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "{{NEGATIVE}}"
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "_meta": { "title": "Latent (4ch, /8)" },
+    "inputs": {
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "batch_size": "{{BATCH}}"
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "_meta": { "title": "Sample (SDXL: dpmpp_2m/karras, 25 steps, cfg 7)" },
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0],
+      "seed": "{{SEED}}",
+      "steps": 25,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "Decode" },
+    "inputs": {
+      "samples": ["5", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save" },
+    "inputs": {
+      "images": ["6", 0],
+      "filename_prefix": "{{PREFIX}}"
+    }
+  }
+}

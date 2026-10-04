@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from lvs.errors import UsageError
 
 import os
 from pathlib import Path
@@ -27,7 +28,7 @@ CONFIG_FILENAME = "config.toml"
 EXAMPLE_FILENAME = "config.example.toml"
 
 
-class ConfigError(Exception):
+class ConfigError(UsageError, Exception):
     """配置缺失或字段非法。消息面向用户，必须说清"缺哪个字段、去哪填"。"""
 
 
@@ -45,6 +46,35 @@ def find_config(explicit: str | os.PathLike[str] | None = None) -> Path | None:
             return candidate
 
     return None
+
+
+def lib_dir(config: Config | None = None) -> Path | None:
+    """本项目的**素材库根**（`[paths].lib`）。这是"一本书一套路径"的统一入口。
+
+    为什么要它：`lvs` 要服务的不止一本书。素材库是"这本书的全部资料"所在
+    （`00-设定/` 定妆卡与风格、`05-拍摄稿/`、`_cast/`、`04-图片素材/`……），
+    结构由拆书技能（newmuyu）定义，各书同构。
+
+    配了它之后：
+      - 风格文件自动找 `<lib>/00-设定/风格预设.toml`
+      - 定妆库默认落 `<lib>/_cast`
+      - 定妆卡默认找 `<lib>/00-设定/*定妆卡*.md`
+    于是**接入一本新书只需要填一个路径**。
+
+    留空/None 时返回 None（退回各处的旧默认值，行为与从前一致）。
+    """
+    if config is None:
+        return None
+    value = config.get("paths.lib")
+    if not value:
+        return None
+    return Path(str(value)).expanduser()
+
+
+def resolve_under_lib(config: Config | None, *parts: str) -> Path | None:
+    """拼一个素材库内的相对路径；没配 `[paths].lib` 就返回 None。"""
+    lib = lib_dir(config)
+    return None if lib is None else lib.joinpath(*parts)
 
 
 def _dotted_get(data: dict[str, Any], dotted: str) -> Any:
@@ -66,6 +96,52 @@ class _Missing:
 
 _MISSING = _Missing()
 
+# 项目 config 的继承键。为什么需要它：
+# `lvs init` 生成的项目 config 只写「跟这本书绑定」的项（lib / 风格 / 定妆 / 门禁），
+# 生成物里明写着「机器相关的项（ComfyUI 地址 / TTS 服务 / API key）沿用主 config.toml」——
+# 但 `--config` 是**整体替换**而不是合并，于是那句话从来没兑现过：
+# 跑 `lvs --config config.某书.toml shots` 会报「未配置 app.openai_api_key」，
+# 静默退回启发式拆镜；ComfyUI / TTS / 人脸权重同样读不到。
+#
+# 不选「把密钥复制进项目 config」这条路：`config.toml` 在 .gitignore 里，而
+# `config.<项目>.toml` **不在** —— 复制等于把密钥提交进版本库。
+#
+# 所以做成**显式继承**：项目 config 里写一行
+#     [base]
+#     config = "config.toml"     # 相对仓库根；也可写绝对路径
+# 加载时先读它当底，再把项目 config 深合并上去（项目优先）。
+# 不写 `[base]` 时行为与从前**完全一致**（临时 config、测试夹具不受影响）。
+_BASE_KEY = "base"
+
+
+def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """`over` 深合并到 `base` 之上，返回新字典。两边同键且都是表时递归，否则 `over` 覆盖。"""
+    out = dict(base)
+    for key, value in over.items():
+        cur = out.get(key)
+        if isinstance(value, dict) and isinstance(cur, dict):
+            out[key] = _deep_merge(cur, value)
+        else:
+            out[key] = value
+    return out
+
+
+def _base_target(value: Any, *, here: Path) -> Path | None:
+    """解析 `[base].config`。先按**项目 config 所在目录**找，再按仓库根找。
+
+    顺序理由：`lvs init` 默认把项目 config 写在仓库根，两种解析结果相同；
+    但把手写的项目 config 放在别处（如某书的素材库里）时，相对它自己更好理解。
+    """
+    if not value:
+        return None
+    p = Path(str(value)).expanduser()
+    if p.is_absolute():
+        return p if p.is_file() else None
+    for cand in (here / p, PROJECT_ROOT / p):
+        if cand.is_file():
+            return cand
+    return None
+
 
 class Config:
     """已加载的配置。字段按需 `get` / `require`，不在导入期强制校验。"""
@@ -74,11 +150,25 @@ class Config:
         self._data = data
         self.path = path
 
+    def as_dict(self) -> dict[str, Any]:
+        """只读快照，供界面摊平展示用（改配置请直接改文件）。"""
+        return self._data
+
     # ---- 构造 -------------------------------------------------------------
 
     @classmethod
-    def load(cls, path: Path) -> "Config":
-        """从文件加载；文件不存在则抛 `ConfigError`（面向用户的提示）。"""
+    def load(cls, path: Path | str, *, _depth: int = 0) -> "Config":
+        """从文件加载；文件不存在则抛 `ConfigError`（面向用户的提示）。
+
+        ★ 接受 `str` 与 `Path` 两种：调用方几乎都会顺手写字符串
+        （`Config.load("config.toml")`），而原先只收 `Path` 会崩成
+        `AttributeError: 'str' object has no attribute 'is_file'` ——
+        一句人话都没有，用户根本不知道错在哪。**宽容接受 + 报人话**。
+
+        ★ 支持 `[base] config = "…"` 显式继承（见 `_BASE_KEY` 注释）：
+        先读底配置，再把本文件深合并上去，本文件优先。
+        """
+        path = Path(path)
         if not path.is_file():
             example = PROJECT_ROOT / EXAMPLE_FILENAME
             raise ConfigError(
@@ -90,6 +180,19 @@ class Config:
                 data = tomllib.load(fh)
         except tomllib.TOMLDecodeError as exc:  # 语法错误
             raise ConfigError(f"配置文件格式有误：{path}\n  {exc}") from exc
+
+        # 显式继承：把 [base] 那一节从本文件里摘掉（它不是真实配置项），
+        # 再逐层往上加载。`_depth` 挡住写成环的继承链（A→B→A）。
+        base_section = data.get(_BASE_KEY)
+        if isinstance(base_section, dict) and _depth < 5:
+            target = _base_target(base_section.get("config"), here=path.parent)
+            if target is not None and target.resolve() != path.resolve():
+                parent = cls.load(target, _depth=_depth + 1)
+                data = _deep_merge(parent.as_dict(), {k: v for k, v in data.items() if k != _BASE_KEY})
+            else:
+                data = {k: v for k, v in data.items() if k != _BASE_KEY}
+        elif _BASE_KEY in data:
+            data = {k: v for k, v in data.items() if k != _BASE_KEY}
         return cls(data, path)
 
     @classmethod

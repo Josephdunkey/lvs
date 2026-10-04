@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}素材库 · LongVideoStudio{% endblock %}
+
+{% block main %}
+<div class="topbar">
+  <div>
+    <h1>素材库</h1>
+    <div class="sub">只读：翻库时命中的文件会被**复制/硬链接**进任务目录，原文件永不改动</div>
+  </div>
+  <div class="actions"><button class="btn" onclick="loadLibrary()">重新扫描</button></div>
+</div>
+
+<div class="body">
+  {% if config_error %}
+  <div class="card"><div class="pad" style="color:#c9a55f">配置读不到：{{ config_error }}</div></div>
+  {% endif %}
+
+  {% if not dirs %}
+  <div class="card">
+    <div class="pad empty">
+      还没有配置素材库目录。在 <span class="mono">config.toml</span> 的 <span class="mono">[library] dirs</span> 里
+      填上图片/视频所在目录，这里就能看到它们。
+    </div>
+  </div>
+  {% endif %}
+
+  <div id="lib-result" class="body" style="padding:0"></div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+async function loadLibrary() {
+  const box = document.getElementById('lib-result');
+  box.innerHTML = '<div class="card"><div class="pad dim">正在扫描…（大目录会慢一点）</div></div>';
+  try {
+    const data = await api('/api/library');
+    if (data.error) { box.innerHTML = `<div class="card"><div class="pad" style="color:#c9a55f">${esc(data.error)}</div></div>`; return; }
+    box.innerHTML = data.dirs.map((d) => `
+      <div class="card">
+        <header>
+          <h2 class="mono" style="font-size:12.5px">${esc(d.path)}</h2>
+          <span class="${d.exists ? 'tag ok' : 'tag'}">${d.exists ? d.count + ' 个可用文件' : '目录不存在'}</span>
+        </header>
+        <div class="pad">
+          ${d.exists ? `
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+              ${Object.entries(d.by_suffix).map(([k, v]) => `<span class="tag">${esc(k)} ${v}</span>`).join('') || '<span class="dim">没有图片或视频</span>'}
+            </div>
+            <div class="mono dim" style="font-size:12px;line-height:1.9">
+              ${d.samples.map((s) => esc(s)).join('<br>')}
+              ${d.count > d.samples.length ? `<br>… 还有 ${d.count - d.samples.length} 个` : ''}
+            </div>` : '<div class="dim">路径不存在，检查 config.toml 里的填法。</div>'}
+        </div>
+      </div>`).join('') || '<div class="card"><div class="pad empty">没有配置素材库目录。</div></div>';
+  } catch (e) { box.innerHTML = `<div class="card"><div class="pad" style="color:#d4674e">${esc(e.message)}</div></div>`; }
+}
+loadLibrary();
+</script>
+{% endblock %}

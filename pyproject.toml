@@ -24,5 +24,22 @@ dev = ["pytest>=7.4"]
 [project.scripts]
 lvs = "lvs.cli:main"
 
-[tool.setuptools]
-packages = ["lvs"]
+# ★ 必须用 `find`（自动发现子包），**不能写死** `packages = ["lvs"]`。
+#
+# 实测踩过：写死 `["lvs"]` 会把 **`lvs.gui` 整个子包漏掉** ——
+# `pip install` 装出来 `lvs gui` 直接不可用，而 `pip wheel` 不会报错（静默）。
+# 判据：`python -m pip wheel . --no-deps` 之后，wheel 里必须**含 gui 文件**。
+[tool.setuptools.packages.find]
+include = ["lvs*"]
+
+[tool.setuptools.package-data]
+# 生图工作流模板是**运行时要读的数据**，必须打进包里 —— 光有 .py 不够。
+"lvs" = ["../workflows/*.json"]
+
+# ★ GUI 的模板与静态资源同样是**运行时要读的数据**（Flask 按 `lvs/gui/` 找 templates/static）。
+#
+# 实测（2026-10-05）：只有上面那一行时，`pip wheel .` 产出的 wheel **58 个条目里
+# `lvs/gui/templates/*.html`（5 个）与 `lvs/gui/static/*`（3 个）一个都没有** ——
+# 装完 `lvs gui` 每个页面都 404，而 pip 全程不报任何错（与"写死 packages 漏掉 lvs.gui" 同一类静默故障）。
+# 补上这一行后 wheel 66 个条目，这 8 个资源全在。
+"lvs.gui" = ["templates/*.html", "static/*"]

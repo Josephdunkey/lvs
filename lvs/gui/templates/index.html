@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}任务 · LongVideoStudio{% endblock %}
+
+{% block main %}
+<div class="topbar">
+  <div>
+    <h1>任务</h1>
+    <div class="sub">
+      {{ tasks|length }} 个任务
+      {%- if running %} · <span style="color:#e08a72">正在跑：{{ running.task }} / {{ running.stage }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn primary" onclick="openNewTask()">新建任务</button>
+  </div>
+</div>
+
+<div class="body">
+  {% if running %}
+  <div class="card">
+    <div class="pad" style="display:flex;align-items:center;justify-content:space-between;gap:14px">
+      <div>
+        <b>{{ running.task }}</b>
+        <span class="dim">正在跑「{{ running.stage }}」，已 {{ '%.0f'|format(running.elapsed) }} 秒</span>
+      </div>
+      <a class="btn" href="/task/{{ running.task }}">看日志</a>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    {% if tasks %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width:22%">任务</th>
+          <th style="width:30%">阶段</th>
+          <th style="width:10%">分镜</th>
+          <th style="width:14%">成片</th>
+          <th style="width:14%">更新</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tasks %}
+        <tr>
+          <td class="name"><a href="/task/{{ t.name }}">{{ t.name }}</a></td>
+          <td>
+            <div style="display:flex;gap:6px;align-items:center">
+              {% for s in t.stages %}
+                {% set cls = 'tag ok' if s.finished else ('tag warn' if s.status == 'partial' else 'tag') %}
+                <span class="{{ cls }}" title="{{ s.label }} · {{ s.status }}{% if s.total %} · {{ s.done }}/{{ s.total }}{% endif %}">
+                  {{ s.label }}{% if s.total and s.name in ('assets','voice','build') %} {{ s.done }}/{{ s.total }}{% endif %}
+                </span>
+              {% endfor %}
+            </div>
+          </td>
+          <td class="nums">{{ t.shots_total or '—' }}</td>
+          <td>
+            {% if t.has_final %}
+              <span class="tag ok">已出片</span>
+              {% if t.final_duration %}<span class="dim nums"> {{ t.final_duration|round(1) }}s</span>{% endif %}
+            {% else %}
+              <span class="dim">—</span>
+            {% endif %}
+          </td>
+          <td class="dim nums">{{ t.updated|ts }}</td>
+          <td style="text-align:right">
+            <a class="btn tiny" href="/task/{{ t.name }}">打开</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="pad empty">还没有任务。点右上「新建任务」，上传拍摄稿就能开工。</div>
+    {% endif %}
+  </div>
+</div>
+
+<dialog id="dlg-new">
+  <header>新建任务</header>
+  <div class="pad">
+    <div class="field">
+      <label for="nt-name">任务名</label>
+      <input type="text" id="nt-name" placeholder="例如 K005-名分账" autocomplete="off">
+      <span class="hint">产物会落在 <span class="mono">.work/&lt;任务名&gt;/</span>，名字里的空格与符号会被规整。</span>
+    </div>
+    <div class="field">
+      <label for="nt-file">拍摄稿文件</label>
+      <input type="file" id="nt-file" accept=".md,.txt">
+      <span class="hint">或者直接在下面粘贴文本（二选一）。上传后存到任务的 <span class="mono">manuscript.md</span>。</span>
+    </div>
+    <div class="field">
+      <label for="nt-text">或粘贴拍摄稿</label>
+      <textarea id="nt-text" placeholder="[画面位] …&#10;旁白句一。&#10;旁白句二。"></textarea>
+    </div>
+    <div class="field">
+      <label for="nt-source">实拍镜的素材来源</label>
+      <select id="nt-source">
+        <option value="auto">自动判定（逐镜决定，推荐）</option>
+        <option value="pexels">下载实拍素材（Pexels）</option>
+        <option value="local">本地生图（ComfyUI）</option>
+        <option value="library">本地素材库（未命中回退生图）</option>
+      </select>
+      <span class="hint">只影响实拍镜 —— 图文/图表卡片仍由本地排版渲染。进任务后随时能改。</span>
+    </div>
+  </div>
+  <footer>
+    <button class="btn ghost" onclick="document.getElementById('dlg-new').close()">取消</button>
+    <button class="btn primary" onclick="submitNewTask()">创建</button>
+  </footer>
+</dialog>
+{% endblock %}
+
+{% block script %}
+<script>
+function openNewTask() { document.getElementById('dlg-new').showModal(); }
+
+async function submitNewTask() {
+  const name = document.getElementById('nt-name').value.trim();
+  const file = document.getElementById('nt-file').files[0];
+  const text = document.getElementById('nt-text').value;
+  if (!name) { toast('先给任务起个名字', true); return; }
+
+  const send = async (overwrite) => {
+    const fd = new FormData();
+    fd.append('task', name);
+    if (file) fd.append('manuscript', file); else fd.append('text', text);
+    if (overwrite) fd.append('overwrite', '1');
+    const r = await fetch('/api/task', { method: 'POST', body: fd });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  };
+
+  try {
+    let res = await send(false);
+    if (!res.ok && res.status === 409 && res.data.exists) {
+      if (!confirm(res.data.error)) return;     // 覆盖已有拍摄稿要用户点头
+      res = await send(true);
+    }
+    if (!res.ok) throw new Error(res.data.error || '创建失败');
+    // 选好的来源策略跟着过去；还没拆镜时没法记进 shots.json，先由 URL 带着
+    const source = document.getElementById('nt-source').value;
+    location.href = '/task/' + encodeURIComponent(res.data.task) + (source ? '?source=' + encodeURIComponent(source) : '');
+  } catch (e) { toast(e.message, true); }
+}
+</script>
+{% endblock %}

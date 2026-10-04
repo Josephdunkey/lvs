@@ -1,7 +1,7 @@
 """拍摄稿解析（`lvs parse`）—— 票据 04 + 05。
 
 输入：一篇结构化拍摄稿 Markdown（如
-`D:\\fanshu\\资治通鉴\\10-语料\\知识视频素材库\\05-拍摄稿\\K005-*.md`）。
+`D:\\素材库\\知识视频素材库\\05-拍摄稿\\K005-*.md`）。
 输出：`.work/<task>/parse.json`，含
 
 - `meta`              标题 / 封面文案（元数据，**不进旁白**）
@@ -26,6 +26,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from lvs.prompting import split_beats
+
 # ---- 正则 ------------------------------------------------------------------
 
 _RE_H1 = re.compile(r"^#\s+(.+)$")
@@ -39,6 +41,9 @@ _RE_REENGAGE = re.compile(r"^\[重参与点[^\]]*\]\s*(.*)$")
 _RE_BRACKET = re.compile(r"^\[(?P<name>[^\]]+)\]\s*$")
 _RE_META_TAG = re.compile(r"^\*\*【(?P<name>[^】]+)】\*\*")
 _RE_VISUAL_LIKE = re.compile(r"^(?:第[一二三四五六七八九十百零\d]+个)?画面\s*[:：]")
+# 讲稿元标记：给审计/人读的脚手架，不是给观众听的。半角形一并防
+# （用户拍板 2026-10-04：TTS 不许把「原文」两个字念出来）。
+_RE_STAGE_MARKER = re.compile(r"〔(?:原文|注|附)〕|\[(?:原文|注|附)\]")
 _RE_CUE = re.compile(r"（(?:转场|停顿|停|留白|重音|渐出|渐入)）")
 
 _END_WORDS = {"结尾", "结束", "末", "片尾", "END", "end"}
@@ -100,8 +105,27 @@ def clean_line(line: str) -> str:
     return text.strip()
 
 
+def strip_stage_markers(text: str) -> str:
+    """剥掉讲稿元标记（〔原文〕〔注〕〔附〕及半角形），只留要念的字。
+
+    **单一剥离点**：`parse` 生成 narration 的那一行调用它。配音合成、字幕文本、
+    字幕时间轴（`tts.build_srt` / `char_time_curve`）全部只读 narration，
+    所以在这一处剥掉，音频与字幕天然同源、不会错位。
+    """
+    return _RE_STAGE_MARKER.sub("", text)
+
+
 def _is_blank(line: str) -> bool:
     return not line.strip()
+
+
+def beats_of(visual: str) -> list[dict[str, Any]]:
+    """把一行画面位拆成 beat（票据 27）。
+
+    画面位写的是**剪辑设计**，一行常含多个 beat（`A → B → C`）。拆开才能给每镜
+    分配到真正属于自己的画面，而不是整段几十镜共用一条设计。
+    """
+    return [{"text": b.text, "kind": b.kind} for b in split_beats(visual)]
 
 
 # ---- 主解析 ----------------------------------------------------------------
@@ -185,25 +209,46 @@ def parse_script(text: str) -> dict[str, Any]:
     }
 
 
+_MARK_KIND = re.compile(r"\[(?:画面位|场景|图表)\]\s*")
+
+
+def _clean_mark(line: str) -> str:
+    """`[画面位] [场景] A → [场景] B` → `A → B`。
+
+    与正文那条路径**同源**（都用 `clean_line`，`[场景]` 由 `split_beats` 逐 beat 剥）：
+    这里洗不干净，`[画面位] [场景]` 会被原样带进生图提示词 —— 而模型是**照字面画**的。
+    保留 `→`：它是 beat 分隔符，`beats_of()` 还要用它拆。
+    """
+    return clean_line(_MARK_KIND.sub("", (line or "").strip()))
+
+
 def _parse_meta_section(
     block: list[str], base_line: int, notes: list[str]
 ) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
-    """解析 `一、传达层`：抽【标题】【封面文案】为 meta，【冷开场】为 cold_open。"""
+    """解析 `一、传达层`：抽【标题】【封面文案】为 meta，【冷开场】为 cold_open。
+
+    ★ 冷开场块里的 `[画面位]` 也要收（见下 `cold_open["visual_marks"]`）：
+    片头 0–30 秒是全片最贵的位置，而它的旁白只住在这一块里 ——
+    收不到画面位，这十几镜的提示词就只能退化成 `meta.title_card`（标题文案），
+    等于把"标题"当画面画出来。
+    """
     meta: dict[str, Any] = {}
     cold_open: dict[str, Any] | None = None
     uncertain: list[dict[str, Any]] = []
 
     current: str | None = None
     bucket: list[str] = []
+    visual_bucket: list[str] = []  # 本块里的 `[画面位]` 行（与旁白分开收）
     header_raw: list[str] = []  # 标签行原文（含 `（时间码…）` 说明），供提取时间码
 
     def flush() -> None:
-        nonlocal current, bucket, cold_open, header_raw
+        nonlocal current, bucket, cold_open, header_raw, visual_bucket
         if current is None:
             return
         name, lines_ = current, list(bucket)
+        marks = list(visual_bucket)
         scan = list(header_raw)
-        current, bucket, header_raw = None, [], []
+        current, bucket, header_raw, visual_bucket = None, [], [], []
         texts = [clean_line(x) for x in lines_ if not _is_blank(x)]
         texts = [t for t in texts if t]
         if "冷开场" in name:
@@ -215,7 +260,15 @@ def _parse_meta_section(
                     start = parse_timecode(m.group(1)) or 0.0
                     end = parse_timecode(m.group(2))
                     break
-            cold_open = {"start": start, "end": end, "text": texts, "source": "一、传达层/【冷开场】"}
+            cold_open = {
+                "start": start, "end": end, "text": texts,
+                "source": "一、传达层/【冷开场】",
+                # ★ 拆成 beat 再存：与正文段**同一套**处理。
+                #   直接存整行会把 `[场景] A → [场景] B` 原样带进提示词
+                #   （`[场景]` 本来就是靠 `split_beats` 逐 beat 剥掉的）。
+                "visual_marks": [_clean_mark(m) for m in marks],
+                "beats": [b for m in marks for b in beats_of(_clean_mark(m))],
+            }
         elif "标题" in name:
             meta["title_card"] = texts[0] if texts else ""
         elif "封面" in name:
@@ -224,20 +277,32 @@ def _parse_meta_section(
             uncertain.append({"kind": "meta_block", "name": name, "lines": texts, "line": base_line})
 
     for offset, raw in enumerate(block):
-        m = _RE_META_TAG.match(raw.strip())
+        stripped = raw.strip()
+        m = _RE_META_TAG.match(stripped)
         if m:
             flush()
             current = m.group("name").strip()
             bucket = []
-            header_raw = [raw.strip()]
+            header_raw = [stripped]
             # 标签后同一行可能还有内容；先剥掉 `（…）` 说明（那是写作提示，非内容）
-            rest = raw.strip()[m.end():].strip()
+            rest = stripped[m.end():].strip()
             rest = re.sub(r"^（[^）]*）\s*", "", rest)
             if rest:
                 bucket.append(rest)
             continue
-        if current is not None and raw.strip().startswith(">"):
-            bucket.append(raw.strip().lstrip(">").strip())
+        if current is not None and stripped.startswith(">"):
+            inner = stripped.lstrip(">").strip()
+            # `> [画面位] …` 也算画面位（作者可能照着正文的写法给引文块加前缀）
+            if inner.startswith("[画面位]") or inner.startswith("[画面位："):
+                visual_bucket.append(_clean_mark(inner))
+            else:
+                bucket.append(inner)
+            continue
+        if current is not None and stripped.startswith("[画面位]"):
+            # ★ 裸 `[画面位]` 行：早先会走到下面的 `flush()`，把冷开场**拦腰截断** ——
+            # 于是「前半段旁白进 cold_open、后半段落进 uncertain」，而且不报错。
+            # 现在明确收进本块的画面位，不再当作块边界。
+            visual_bucket.append(_clean_mark(stripped))
             continue
         if current is not None and _is_blank(raw):
             continue
@@ -279,6 +344,7 @@ def _parse_body_section(
                 "timecode_raw": "",
                 "narration": [],
                 "visual_marks": [],
+                "flow": [],
                 "excluded": [],
             }
         return current
@@ -327,6 +393,7 @@ def _parse_body_section(
                 "timecode_raw": raw_range,
                 "narration": [],
                 "visual_marks": [],
+                "flow": [],
                 "excluded": [],
             }
             if start is None:
@@ -383,7 +450,12 @@ def _parse_body_section(
         # `[画面位] 描述`（带内容，非独立行）
         m_mark = _RE_VISUAL_MARK.match(stripped)
         if m_mark:
-            ensure_segment()["visual_marks"].append(clean_line(m_mark.group(1)))
+            seg = ensure_segment()
+            visual = clean_line(m_mark.group(1))
+            seg["visual_marks"].append(visual)
+            # `flow` 保留旁白/画面位的**相对先后**，供拆镜时把每句映射到"最近的画面位"；
+            # `beats` 是这一行画面位拆出来的画面单元（票据 27），供拆镜按 beat 分配。
+            seg["flow"].append({"kind": "visual", "text": visual, "beats": beats_of(visual)})
             i += 1
             continue
 
@@ -403,10 +475,32 @@ def _parse_body_section(
             continue
 
         if stripped.startswith(">"):
-            ensure_segment()["excluded"].append(
-                {"kind": "blockquote", "text": clean_line(stripped.lstrip(">").strip()), "line": line_no}
+            # ★ 引文块是**块语义**（2026-10-04 实锤 001/002 共 36 处重复念）：
+            #   `> 〔引原文〕` 只是标记行，正文行（无 `>` 前缀）若按单行处理会落进
+            #   narration → 同一句在行内〔原文〕与块正文各念一遍。
+            #   现在连带收集其后直到空行/结构边界（段标题、[标记]）的整块，全部 excluded。
+            seg = ensure_segment()
+            body_lines = [stripped.lstrip(">").strip()]
+            j = i + 1
+            while j < len(block):
+                nxt_raw = block[j]
+                nxt = nxt_raw.strip()
+                if (
+                    not nxt
+                    or nxt == "---"
+                    or _RE_BRACKET.match(nxt)
+                    or _RE_VISUAL_MARK.match(nxt)
+                    or _RE_SEG_HEAD.match(nxt)
+                    or _RE_H2.match(nxt)
+                    or _RE_H3.match(nxt)
+                ):
+                    break
+                body_lines.append(nxt.lstrip(">").strip())
+                j += 1
+            seg["excluded"].append(
+                {"kind": "blockquote", "text": clean_line(" ".join(x for x in body_lines if x)), "line": line_no}
             )
-            i += 1
+            i = j
             continue
 
         # 仍在收集某个 [...] 块
@@ -427,10 +521,12 @@ def _parse_body_section(
             i += 1
             continue
 
-        # 其余 → 旁白
-        text = clean_line(stripped)
+        # 其余 → 旁白（元标记不进旁白：不念、不上字幕）
+        text = strip_stage_markers(clean_line(stripped))
         if text:
-            ensure_segment()["narration"].append(text)
+            seg = ensure_segment()
+            seg["narration"].append(text)
+            seg["flow"].append({"kind": "narration", "text": text})
         i += 1
 
     if pending_bracket is not None:
@@ -474,12 +570,12 @@ def _parse_mark_table(
 
 
 def run_command(config, ws, args) -> int:  # noqa: ANN001 - 由 cli 传入
-    script = getattr(args, "script", None)
-    if not script:
+    manuscript = getattr(args, "manuscript", None)
+    if not manuscript:
         print("用法：lvs parse <拍摄稿.md> [--task NAME]")
         return 2
 
-    src = Path(script)
+    src = Path(manuscript)
     if not src.is_file():
         print(f"拍摄稿不存在：{src}")
         return 2

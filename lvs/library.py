@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shutil
@@ -26,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from lvs import artifact
 from lvs.config import PROJECT_ROOT
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
@@ -204,7 +204,7 @@ def _signature(dirs: list[str], recursive: bool) -> str:
             payload.append(f"{p}:{p.stat().st_mtime_ns}")
         except OSError:
             payload.append(f"{p}:missing")
-    return hashlib.sha1("|".join(payload).encode("utf-8")).hexdigest()
+    return artifact.signature(*payload, length=0)
 
 
 def load_index(root: Path = PROJECT_ROOT) -> dict[str, Any] | None:
