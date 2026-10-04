@@ -547,6 +547,14 @@ def _run_to_part(args: list[str], part: Path, out: Path, *, cwd: Path | None = N
         except OSError:
             pass
         raise
+    if not part.is_file():
+        # ★ ffmpeg 返回码为 0 **也可能什么都没写**（磁盘满 / 权限 / 被安全软件拦下）——
+        #   本项目已经为这条踩过坑（见 `assert_segment_rendered` 的注释）。这里必须转成
+        #   `FFmpegError`：否则 `os.replace` 抛的是裸 `FileNotFoundError`，
+        #   `finalize` 的「BGM 失败退回无 BGM」外壳接不住，直接炸穿到调用方。
+        raise FFmpegError(
+            f"ffmpeg 返回成功但没有产出 {part.name}（磁盘满 / 权限 / 被安全软件拦截？）"
+        )
     artifact.commit_file(part, out)
     return out
 

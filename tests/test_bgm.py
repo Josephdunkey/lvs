@@ -144,9 +144,14 @@ def _capture_finalize(monkeypatch, tmp_path, cfg: Config, *, bgm: Path | None):
     captured: list[list[str]] = []
     monkeypatch.setattr(build, "tools", lambda: ("ffmpeg", ""))
     monkeypatch.setattr(build, "ff_duration", lambda p: 100.0)
-    monkeypatch.setattr(
-        build, "ff_run", lambda args, cwd=None: captured.append(list(args))
-    )
+    def fake_run(args, cwd=None):      # noqa: ANN001, ANN202
+        # ★ 桩也要「成功 = 产物真的存在」：早先只记 args、不落文件，
+        #   于是掩盖了「ffmpeg 返回 0 却没产物」这条真故障（本轮 #2 原子化时被它绊到）。
+        captured.append(list(args))
+        assert str(args[-1]).endswith("final.mp4.part"), "必须先写 .part 再归位"
+        Path(args[-1]).write_bytes(b"stub")
+
+    monkeypatch.setattr(build, "ff_run", fake_run)
     build._finalize(ws, Path("v.mp4"), Path("n.mp3"), srt, cfg, bgm=bgm)
     assert captured, "ff_run 没被调用"
     return captured[0]
@@ -181,9 +186,14 @@ def test_burn_subtitles_path_also_carries_bgm(monkeypatch, tmp_path):
     captured: list[list[str]] = []
     monkeypatch.setattr(build, "tools", lambda: ("ffmpeg", ""))
     monkeypatch.setattr(build, "ff_duration", lambda p: 100.0)
-    monkeypatch.setattr(
-        build, "ff_run", lambda args, cwd=None: captured.append(list(args))
-    )
+    def fake_run(args, cwd=None):      # noqa: ANN001, ANN202
+        # ★ 桩也要「成功 = 产物真的存在」：早先只记 args、不落文件，
+        #   于是掩盖了「ffmpeg 返回 0 却没产物」这条真故障（本轮 #2 原子化时被它绊到）。
+        captured.append(list(args))
+        assert str(args[-1]).endswith("final.mp4.part"), "必须先写 .part 再归位"
+        Path(args[-1]).write_bytes(b"stub")
+
+    monkeypatch.setattr(build, "ff_run", fake_run)
     build._finalize(ws, Path("v.mp4"), Path("n.mp3"), srt, _cfg(), bgm=bgm)
     filters = captured[0][captured[0].index("-filter_complex") + 1]
     assert "subtitles=" in filters and "amix=inputs=2" in filters

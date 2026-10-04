@@ -134,3 +134,47 @@ def test_finalize_real_ffmpeg_writes_playable_mp4(tmp_path: Path):
     info = probe(out)
     assert info.get("streams"), "成片探不出流 = 封装坏了（`.part` + `-f mp4` 这套没起作用）"
     assert burned is False
+
+
+def test_finalize_raises_ffmpeg_error_when_ffmpeg_writes_nothing(tmp_path: Path, monkeypatch):
+    """ffmpeg 返回 0 却没产物 → 必须是 `FFmpegError`，**不是裸 `FileNotFoundError`**。
+
+    否则 `finalize` 的「BGM 失败 → 退回无 BGM」外壳接不住它，会直接炸穿到调用方。
+    这条是**全量回归抓出来的**（`tests/test_bgm.py` 三例，2026-10-05）。
+    """
+    ws = _ws(tmp_path)
+    monkeypatch.setattr(build, "tools", lambda: ("ffmpeg", ""))
+    monkeypatch.setattr(build, "ff_run", lambda *a, **k: "")      # 假装成功，什么都不写
+
+    with pytest.raises(FFmpegError) as ei:
+        _finalize(ws)
+    assert "final.mp4.part" in str(ei.value), "错误信息要点名缺的是哪个文件"
+    assert not ws.path("final.mp4").exists()
+
+
+def test_bgm_fallback_survives_a_missing_part(tmp_path: Path, monkeypatch):
+    """BGM 第一次「成功但没产物」→ 退回无 BGM 重试，最终仍出成片（不许炸穿）。"""
+    ws = _ws(tmp_path)
+    bgm = tmp_path / "bgm.mp3"
+    bgm.write_bytes(b"x")
+    monkeypatch.setattr(build, "tools", lambda: ("ffmpeg", ""))
+    monkeypatch.setattr(build, "ff_duration", lambda p: 1.0)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kw):  # noqa: ANN001, ANN003, ANN202
+        calls.append(list(args))
+        if len(calls) == 1:
+            return ""            # 带 BGM 那次：静默失败（不产出）
+        Path(args[-1]).write_bytes(b"MOVIE")
+        return ""
+
+    monkeypatch.setattr(build, "ff_run", fake_run)
+    cfg = Config({"bgm": {"file": str(bgm)}}, None)
+    out, burned = build.finalize(
+        ws, ws.path("video_track.mp4"), ws.path("narration.wav"),
+        ws.path("subtitle.srt"), cfg,
+    )
+
+    assert len(calls) == 2, "第一次带 BGM 失败后必须退回无 BGM 重试"
+    assert out.read_bytes() == b"MOVIE"
+    assert burned is False
