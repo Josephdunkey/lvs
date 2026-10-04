@@ -20,6 +20,7 @@ from lvs import board as board_mod
 from lvs import tts as tts_mod
 from lvs.config import Config
 from lvs.workspace import Workspace
+import pytest
 
 
 def _cfg() -> Config:
@@ -56,6 +57,7 @@ class MarkStageProgressTest(unittest.TestCase):
                          "要真落盘，不能只在内存里")
 
 
+@pytest.mark.slow   # ★ 慢组：InterruptedAssetsTest
 class InterruptedAssetsTest(unittest.TestCase):
     """跑到一半炸掉 —— 盘上必须留着"跑到哪了"。"""
 

@@ -38,6 +38,9 @@ from lvs import stage as stage_mod
 from lvs.config import Config
 from lvs.workspace import Workspace
 
+#: ★ 慢组（真跑 ffmpeg / 真建 wheel / 整条 e2e）—— 日常验证用 -m "not slow and not gpu" 跳过
+pytestmark = pytest.mark.slow
+
 TASK = "E2E"
 
 MANUSCRIPT = """# 001-测试集 拍摄稿

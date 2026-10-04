@@ -17,6 +17,8 @@
 7. **读文档的铁律**：先读 `docs/INDEX.md`（60 行，逐篇说明“什么时候才该读它”），**只读当前任务相关的 1–2 篇**，不要把审查报告整篇读进来（`docs/*.md` 合计 ≈ 33 万 token）。
    要某一条先定位再读那一节：`Select-String -Path docs\<篇名>.md -Pattern '^### B0[0-9]'`（编号见《严重等级登记册》）。
 8. **看分镜不要整份读**：`lvs shots --task X --index`（一镜一行，516 KB → 约 18 KB）、`lvs shots --task X --peek 193`（单镜摘要，< 400 字符）；看提示词全文才加 `--full`。这两个开关是只读的，不会建目录、不会改状态。
+9. **测试只跑该跑的那一组**：日常 `./.venv/Scripts/python.exe -m pytest -m "not slow and not gpu"`（1150 例 / **96 s**）；只有改了 `artifact` / `workspace` / `pipeline` / `build` 这类**公共底座**才跑全量 `pytest`（1207 例 / 255–276 s）。`-m slow` = 真 ffmpeg / 真子进程 / 真建 wheel / e2e。
+10. **读源码不要整份读**：`./.venv/Scripts/python.exe -m lvs map show <文件> <起行> <止行>`（带行号）、`lvs map grep <正则> --glob "lvs/*.py" -C 2`、`lvs map ls`（列已有编号 dump）。
 
 ## Agent skills
 

@@ -43,3 +43,24 @@ include = ["lvs*"]
 # 装完 `lvs gui` 每个页面都 404，而 pip 全程不报任何错（与"写死 packages 漏掉 lvs.gui" 同一类静默故障）。
 # 补上这一行后 wheel 66 个条目，这 8 个资源全在。
 "lvs.gui" = ["templates/*.html", "static/*"]
+
+
+# ---- 测试分层（2026-10-05）---------------------------------------------------
+#
+# 为什么：全量 pytest 约 255–276 s，而「我改了一行、坏没坏」只需要秒级反馈 ——
+# 验证成本直接决定开发成本（本项目最大一笔 token 开销就来自「跑一遍看看」）。
+#
+#   pytest -m "not slow and not gpu"   # 日常：跳过真 ffmpeg / 真子进程 / 真建 wheel / e2e
+#   pytest                             # 全量：发布前、或改到公共底座（artifact/workspace/pipeline）时
+#   pytest -m slow                     # 只跑重的（改 ffmpeg 拼接、TTS、GUI job、打包时）
+#
+# `slow` 的判据是**实测**（--durations），不是「看着像慢」：真跑 ffmpeg 编码、真起子进程、
+# 真建 wheel、整条离线 e2e 流水线。`gpu` 留给需要本机 ComfyUI(:8188) / Qwen3-TTS(:8100)
+# **在线**的用例 —— 当前一条都没有（现有测试一律用不可达端口 + placeholder 后端，故意不依赖服务），
+# 先注册着，免得将来加时忘了标记、把「没起服务」误判成「测试挂了」。
+[tool.pytest.ini_options]
+addopts = "-q --tb=line"
+markers = [
+    "slow: 真跑 ffmpeg / 真起子进程 / 真建 wheel / 端到端流水线（实测 >1s 级）",
+    "gpu: 需要本机 ComfyUI(:8188) 或 Qwen3-TTS(:8100) 服务在线（当前无用例）",
+]

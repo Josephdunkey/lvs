@@ -24,6 +24,9 @@ from pathlib import Path
 
 import pytest
 
+#: ★ 慢组（真跑 ffmpeg / 真建 wheel / 整条 e2e）—— 日常验证用 -m "not slow and not gpu" 跳过
+pytestmark = pytest.mark.slow
+
 ROOT = Path(__file__).resolve().parent.parent
 
 

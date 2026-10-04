@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 from lvs.gui import jobs, store
+import pytest
 
 
 def _task_fixture(root: Path, name: str = "demo", shots: int = 3) -> Path:
@@ -160,6 +161,7 @@ class StageSpecTest(unittest.TestCase):
         self.assertNotIn("shell", " ".join(argv))
 
 
+@pytest.mark.slow   # ★ 慢组：JobRegistryTest
 class JobRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
         td = tempfile.mkdtemp()

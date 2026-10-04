@@ -14,6 +14,7 @@ from lvs import assets as assets_mod
 from lvs import cards, graphic
 from lvs.config import Config
 from lvs.workspace import Workspace
+import pytest
 
 BEAT_A = "时间轴：前403 → 前313 → 前284 → 前256 → 名分价格曲线缓缓下滑"
 BEAT_B = "三十六个邑，三万口人，六十万斤黄金"
@@ -44,6 +45,7 @@ class CardBenchTest(unittest.TestCase):
         self.assertEqual(bench.content[BEAT_A].kind, cards.KIND_TIMELINE)
 
 
+@pytest.mark.slow   # ★ 慢组：GraphicBranchTest
 class GraphicBranchTest(unittest.TestCase):
     """同一条 beat 铺多个镜时，PNG 只栅格化一次。"""
 

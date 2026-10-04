@@ -14,6 +14,7 @@ from pathlib import Path
 
 from lvs.config import Config, ConfigError
 from lvs.workspace import SUBDIRS, Workspace, slugify
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,6 +30,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.slow   # ★ 慢组：TestCliShell
 class TestCliShell(unittest.TestCase):
     def test_help_lists_all_subcommands(self) -> None:
         proc = _run_cli("--help")
@@ -123,6 +125,7 @@ class TestWorkspace(unittest.TestCase):
             self.assertFalse(ws.is_stage_done("parse", outputs=[out]))
 
 
+@pytest.mark.slow   # ★ 慢组：TestImageCommand
 class TestImageCommand(unittest.TestCase):
     """`lvs image` —— 手动生图的参数校验与降级（不依赖 ComfyUI 在线）。"""
 
@@ -160,6 +163,7 @@ class TestImageCommand(unittest.TestCase):
             self.assertIn(flag, proc.stdout)
 
 
+@pytest.mark.slow   # ★ 慢组：TestDoctor
 class TestDoctor(unittest.TestCase):
     def test_doctor_runs_and_reports(self) -> None:
         proc = _run_cli("doctor")

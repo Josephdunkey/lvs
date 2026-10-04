@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from lvs import cardhtml, cards, graphic
+import pytest
 
 
 def _card(kind: str, items: tuple[str, ...]) -> cards.Card:
@@ -26,6 +27,7 @@ SAMPLE = {
 
 
 @unittest.skipUnless(graphic.available(), "需要浏览器或 Pillow + 中文字体")
+@pytest.mark.slow   # ★ 慢组：RenderTest
 class RenderTest(unittest.TestCase):
     def test_every_layout_writes_1920x1080(self) -> None:
         from PIL import Image

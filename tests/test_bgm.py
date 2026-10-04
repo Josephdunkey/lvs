@@ -211,6 +211,7 @@ def _have_ffmpeg() -> bool:
         return False
 
 
+@pytest.mark.slow   # ★ 慢组：TestRealFfmpegBgm
 class TestRealFfmpegBgm:
     """端到端：真的混一段音，验证 BGM 把音量抬上去、时长不漂移。
 

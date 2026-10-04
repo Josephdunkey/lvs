@@ -56,11 +56,24 @@ L1 文字锚定 ✅｜**L2 参考图 img2img ✅ 已真机验证**｜L3 LoRA ❌
 - ★★ **缓存/复用判据必须带「参数指纹」**：`_audio_reusable` 只比 `voice` + 文本 hash →
   改 `[tts] rate/pitch/backend` 会**静默沿用旧音频**（票据 46 仍 open）。凡写
   `if 产物存在: 跳过`，先问"决定它内容的**全部**参数都在指纹里吗？"
-- ★★ **原子写只在 `workspace._write_manifest` 有**（临时文件 → fsync → os.replace）。
-  `build` 直写 `final.mp4` → 中断留 `moov atom not found` 的坏成片且**不记账**（票据 47 仍 open，
-  该文件曾被拷进 `07-成片/`）；`pipeline.save` 的 `gates.json` 同病（截断 = 6 道门重审）。
+- ★★ **原子写已收口到 `artifact.py`**（2026-10-05）：`atomic_write_text` / `atomic_write_bytes` /
+  `commit_file`（外部程序写完再原子归位）。manifest / `shots.json` / `gates.json` / `final.mp4`
+  全走它 —— **新增产物一律别再用裸 `write_text`**（半截文件 = 记录无声作废）。
+  - ⚠ `.part` 交给外部程序（ffmpeg）写盘时**必须显式 `-f mp4`**：`.part` 扩展名推不出封装格式
+    （实测 `Unable to choose an output format for 'final.mp4.part'`）。
+  - ⚠ ffmpeg 返回 0 **也可能零产物**（磁盘满/权限/被拦）→ `_run_to_part` 已改抛 `FFmpegError`；
+    否则裸 `FileNotFoundError` 会炸穿「BGM 失败退回无 BGM」外壳。
+  - ⚠ **门禁账本坏了不静默重建为空**：现在会大声报 + 另存 `gates.json.corrupt` + fail-closed。
 - ⚠ **不要用正则批量改源码**（改完不报错，下次导入才炸）；Markdown/TOML 用脚本改才安全。
 - ⚠ 本机 RTX 4060 Laptop 8GB（可用常只 ~4GB）→ **生图并行非选项**；全量 pytest 慢，分组跑。
+
+- ★ **测试分层**（2026-10-05）：日常 `pytest -m "not slow and not gpu"` = 1150 例 / **96 s**；
+  全量 1207 例 / 255–276 s（只在改 `artifact`/`workspace`/`pipeline`/`build` 等公共底座时跑）。
+  `-m slow` = 真 ffmpeg / 真子进程 / 真建 wheel / e2e；marker 定义在 `pyproject.toml`。
+- ⚠ **桩必须「成功即产出」**：`tests/test_bgm.py` 的 ffmpeg 桩原先只记 args 不落文件，
+  掩盖了「ffmpeg 返回 0 却零产物」这条真故障（#2 原子化时被它绊到，3 例假绿）。
+- ⚠ **`Out-File -Encoding ascii` 会把 here-string 里的中文变成问号**（写补丁脚本中招一次）：
+  改用 `-Encoding utf8`，并在脚本里自检「有没有中文被写成问号」；补丁脚本要幂等或先 `git checkout --`。
 
 ## 省 token 纪律（2026-10-04 复盘：一次返工烧掉大半天 token，7 条防复发）
 1. ★★ **全量 pytest 只发一轮、用对解释器**：`.venv/Scripts/python.exe`（带 ffmpeg 等依赖，

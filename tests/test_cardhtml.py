@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from lvs import cardhtml, cards
+import pytest
 
 CARD = cards.Card(kind=cards.KIND_STATEMENT, items=("三十六个邑", "三万口人", "六十万斤黄金"), source="beat")
 LIST = cards.Card(
@@ -69,6 +70,7 @@ class TemplateTest(unittest.TestCase):
         self.assertIn("甲", cardhtml.html_for(weird))
 
 
+@pytest.mark.slow   # ★ 慢组：RenderTest
 class RenderTest(unittest.TestCase):
     @unittest.skipUnless(cardhtml.available(), "本机没有可用的无头浏览器")
     def test_renders_a_1920x1080_png(self) -> None:

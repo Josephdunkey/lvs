@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from lvs import build
+import pytest
 
 
 class KenBurnsTest(unittest.TestCase):
@@ -180,6 +181,7 @@ class SegmentOutputGuardTest(unittest.TestCase):
             build.assert_segment_rendered(Path("no-such-segment.mp4"), 4.0)
 
 
+@pytest.mark.slow   # ★ 慢组：StaticSegmentRenderTest
 class StaticSegmentRenderTest(unittest.TestCase):
     """静止卡片段必须真的产出帧（回归：曾整段 0 帧）。这两个测试会真跑 ffmpeg。"""
 
@@ -321,6 +323,7 @@ class SegmentKeyTest(unittest.TestCase):
             was_placeholder=False, has_asset=True, recorded="same", want_key="same"))
 
 
+@pytest.mark.slow   # ★ 慢组：SegmentContentIntegrationTest
 class SegmentContentIntegrationTest(unittest.TestCase):
     """接线守护：素材**原地换内容**（路径不变）→ build_segments 必须重渲该片段。
 
