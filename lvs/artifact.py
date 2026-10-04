@@ -217,6 +217,16 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+def commit_file(tmp: Path, path: Path) -> None:
+    """把**已经写好**的临时文件原子换到正式名（`os.replace`）。
+
+    与 `atomic_write_*` 的分工：那两个负责「内容由 Python 写盘」；这个负责
+    「内容已由外部程序（ffmpeg）写到 `tmp`，现在原子归位」—— 成片这类大文件
+    没法先读进内存，只能这样落地。抽出来是为了让「原子提交」只有一处定义。
+    """
+    os.replace(Path(tmp), Path(path))
+
+
 def load_json_safe(path: Path, default: Any = None) -> Any:
     """读 JSON；**不存在 / 读不动 / 不是合法 JSON** 一律返回 `default`（不抛）。
 

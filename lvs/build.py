@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -527,6 +528,29 @@ def _bgm_audio_filter(bgm_dur: float, total: float, config: Config) -> str:
     return ",".join(parts)
 
 
+def _run_to_part(args: list[str], part: Path, out: Path, *, cwd: Path | None = None) -> Path:
+    """跑 ffmpeg 写到 `part`，成功后**原子**换到 `out`；失败清掉半成品再抛。
+
+    ★ 为什么要绕这一下：ffmpeg 直写 `final.mp4` 时被打断（Ctrl-C / 崩溃 / 磁盘满），
+    盘上留下的是一个**能看大小、打不开**的 mp4（`moov atom not found`）—— 它长得和
+    成片一模一样，曾被人拷进 `07-成片/` 当成品。先写 `.part` 再原子归位，读方要么
+    看不到它、要么看到完整成片。
+
+    注意：产物扩展名是 `.part`，ffmpeg 无法据此猜封装格式，所以调用方**必须**显式带
+    `-f mp4`（下面三个分支都带了；漏掉会报 "Unable to find a suitable output format"）。
+    """
+    try:
+        ff_run(args, cwd=cwd)
+    except BaseException:
+        try:
+            part.unlink(missing_ok=True)   # 半成品不许留在目录里冒充成片
+        except OSError:
+            pass
+        raise
+    artifact.commit_file(part, out)
+    return out
+
+
 def finalize(
     ws: Workspace, video_track: Path, narration: Path, srt: Path, config: Config
 ) -> tuple[Path, bool]:
@@ -556,6 +580,8 @@ def _finalize(
     ffmpeg, _ = tools()
     style = _escape_style(str(config.get("build.subtitle_style", DEFAULT_SUBTITLE_STYLE)))
     out = ws.path("final.mp4")
+    # 先写 `.part` 再原子归位：中途被打断只会留下 .part，不会留下「能看大小打不开」的成片
+    part = out.with_name(out.name + ".part")
 
     # BGM 滤镜与混音器（没配 BGM 时两者都为空，走与从前完全一样的命令）
     bgm_input: list[str] = []
@@ -580,7 +606,7 @@ def _finalize(
         filters = video_part + (";" + bgm_mix if bgm_mix else "")
         map_a = "1:a" if not bgm_mix else audio_chain
         try:
-            ff_run(
+            _run_to_part(
                 [
                     ffmpeg, "-y", "-i", str(video_track), "-i", str(narration),
                     *bgm_input,
@@ -588,9 +614,9 @@ def _finalize(
                     "-map", "[v]", "-map", map_a,
                     "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", PIX_FMT,
                     "-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_AR),
-                    "-shortest", "-movflags", "+faststart", str(out),
+                    "-shortest", "-movflags", "+faststart", "-f", "mp4", str(part),
                 ],
-                cwd=ws.dir,
+                part, out, cwd=ws.dir,
             )
             return out, True
         except FFmpegError as exc:
@@ -598,25 +624,27 @@ def _finalize(
             print("   " + str(exc).splitlines()[0])
 
     if bgm_mix:
-        ff_run(
+        _run_to_part(
             [
                 ffmpeg, "-y", "-i", str(video_track), "-i", str(narration),
                 *bgm_input,
                 "-filter_complex", bgm_mix,
                 "-map", "0:v", "-map", audio_chain,
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_AR),
-                "-shortest", "-movflags", "+faststart", str(out),
-            ]
+                "-shortest", "-movflags", "+faststart", "-f", "mp4", str(part),
+            ],
+            part, out,
         )
         return out, False
 
-    ff_run(
+    _run_to_part(
         [
             ffmpeg, "-y", "-i", str(video_track), "-i", str(narration),
             "-map", "0:v", "-map", "1:a",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_AR),
-            "-shortest", "-movflags", "+faststart", str(out),
-        ]
+            "-shortest", "-movflags", "+faststart", "-f", "mp4", str(part),
+        ],
+        part, out,
     )
     return out, False
 
