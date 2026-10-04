@@ -559,3 +559,55 @@ class _KeepCfg:
 
     def has(self, key):
         return key in self._d
+# ---- 账本损坏 / 原子写（2026-10-05 补，票据 47 同族）--------------------------
+#
+# ★ 旧实现的两处叠加伤害：① `save` 用 `write_text`（先截断再写）→ 中断留半截 JSON；
+#   ② `load` 读到坏 JSON **静默**退空账本，而 `save` 一落盘就把原文覆盖没了。
+#   结果是「6 道门全部重审」而没人知道为什么。下面三条钉死修复后的语义。
+
+
+def test_corrupt_ledger_is_quarantined_not_silently_rebuilt(ws: _Ws, capsys):
+    """★ 坏账本必须：①大声报 ②原样留证据 ③fail-closed。"""
+    _approve_shots(ws)
+    ws.path(pl.LEDGER_NAME).write_text("{ not json", encoding="utf-8")
+    assert pl.evaluate(ws, pl.BY_ID["G1"], config=_Cfg()).state == pl.STATE_PENDING
+
+    out = capsys.readouterr().out
+    assert "损坏" in out, "坏账本必须出声（旧实现在这里完全静默）"
+    assert ".corrupt" in out, "要告诉人证据存在哪"
+    backup = ws.path(pl.LEDGER_NAME + ".corrupt")
+    assert backup.read_text(encoding="utf-8") == "{ not json", "损坏内容必须原样保留"
+
+
+def test_corrupt_ledger_self_heals_on_next_save(ws: _Ws):
+    """坏账本不该把任务**锁死**：下一次 `save` 写出合法账本。"""
+    _approve_shots(ws)
+    ws.path(pl.LEDGER_NAME).write_text("{ not json", encoding="utf-8")
+    pl.save(ws, pl.load(ws))
+    data = json.loads(ws.path(pl.LEDGER_NAME).read_text(encoding="utf-8"))
+    assert data["gates"] == {}
+
+
+def test_ledger_save_is_atomic(ws: _Ws, monkeypatch):
+    """写盘中断（os.replace 抛错）→ 账本**保持原内容**（不许变半截）。"""
+    _approve_shots(ws)
+    before = ws.path(pl.LEDGER_NAME).read_bytes()
+
+    def boom(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.replace", boom)
+    led = pl.load(ws)
+    led.gates.clear()
+    try:
+        pl.save(ws, led)
+    except OSError:
+        pass
+    assert ws.path(pl.LEDGER_NAME).read_bytes() == before, "账本被写坏（非原子）"
+    assert not list(ws.dir.glob("*.tmp")), "半成品临时文件没清掉"
+
+
+def test_ledger_version_survives_hand_edited_garbage(ws: _Ws):
+    """手改成 `"version": "v2"` → 不许崩（读不了账本 = 门禁全线不可用）。"""
+    ws.path(pl.LEDGER_NAME).write_text('{"version": "v2", "gates": {}}', encoding="utf-8")
+    assert pl.load(ws).gates == {}

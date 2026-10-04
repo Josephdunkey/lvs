@@ -62,12 +62,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from lvs import artifact
 from lvs.artifact import count_files, fingerprint
 from lvs.errors import BlockedError, UsageError
 from lvs.workspace import Workspace
 
 LEDGER_NAME = "gates.json"
 LEDGER_VERSION = 1
+
+#: `load()` 的哨兵：区分「账本文件不存在」与「文件在、但读不懂」。
+#: 两者都退回空账本（fail-closed），但后者必须**大声报 + 留证据**。
+_BAD_LEDGER = object()
 
 STATE_PENDING = "pending"
 STATE_APPROVED = "approved"
@@ -235,7 +240,7 @@ class Ledger:
         raw = (data or {}).get("gates") or {}
         return cls(
             task=str((data or {}).get("task") or ""),
-            version=int((data or {}).get("version") or LEDGER_VERSION),
+            version=artifact.safe_int((data or {}).get("version") or LEDGER_VERSION, LEDGER_VERSION),
             gates={str(k): GateRecord.from_dict(v) for k, v in raw.items() if isinstance(v, dict)},
         )
 
@@ -252,13 +257,30 @@ def ledger_path(ws: Workspace) -> Path:
 
 
 def load(ws: Workspace) -> Ledger:
+    """读门禁账本。**账本损坏不许静默重建为空**（见下）。"""
     p = ledger_path(ws)
     if not p.is_file():
         return Ledger(task=ws.task)
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        # 账本坏了不该让整条流水线停摆 —— 退到空账本（= 全部未批准，fail-closed 方向）
+    data = artifact.load_json_safe(p, default=_BAD_LEDGER)
+    if data is _BAD_LEDGER or not isinstance(data, dict):
+        # ★ 旧实现：坏账本 → 直接返回空账本，而 `save` 一落盘就把原文**覆盖没了**。
+        #   后果是「6 道门全部重审」而没有任何人知道为什么 —— 批准记录不是没有，
+        #   只是读不懂；把它当「没批准过」处理可以（fail-closed），但**不许不出声**。
+        #   做法：把损坏内容**原样另存** `.corrupt` 一份，再退回空账本。
+        backup = p.with_name(p.name + ".corrupt")
+        note = ""
+        if not backup.exists():
+            try:
+                artifact.atomic_write_bytes(backup, p.read_bytes())
+                note = f"已把损坏内容原样另存为 {backup.name}（供手工抢救）。"
+            except OSError as exc:
+                note = f"另存损坏内容失败（{exc}）—— 请注意它随时可能被覆盖。"
+        else:
+            note = f"损坏内容已在 {backup.name}（未再覆盖它）。"
+        print(f"⚠ 门禁账本损坏（{p.name}）：不是合法 JSON，或不是一个对象。")
+        print(f"  · {note}")
+        print("  · 本次按「六道门全部未批准」处理（fail-closed，不会放行任何东西）。")
+        print("  · 修好内容放回 gates.json 即可恢复；确认弃用就删掉 .corrupt。")
         return Ledger(task=ws.task)
     led = Ledger.from_dict(data)
     led.task = led.task or ws.task
@@ -266,9 +288,17 @@ def load(ws: Workspace) -> Ledger:
 
 
 def save(ws: Workspace, led: Ledger) -> Path:
+    """**原子**写账本。
+
+    ★ 为什么必须原子：账本一坏，6 道门全部重审（几百镜的批准白做）。
+    `write_text` 是「先截断、再写」—— 中断即留下半截 JSON，故与 manifest、
+    `shots.json` 共用 `artifact.atomic_write_text`。
+    """
     ws.ensure()
     p = ledger_path(ws)
-    p.write_text(json.dumps(led.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    artifact.atomic_write_text(
+        p, json.dumps(led.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    )
     return p
 
 
