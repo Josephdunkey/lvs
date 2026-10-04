@@ -164,3 +164,133 @@ def test_corrupt_manifest_is_rebuilt_with_version(tmp_path: Path):
     assert data["version"] == MANIFEST_VERSION
     assert data["stages"] == {}
     assert json.dumps(data)  # 可序列化
+# ---- 原子写底座（atomic_write_text / atomic_write_bytes）--------------------
+#
+# ★ 变异验证：把实现换回 `path.write_text(...)`（先截断、再写）时，
+#   `test_atomic_write_never_opens_target_for_writing` 必须**变红** ——
+#   它保证这组测试真的在测"原子"，而不是在测"能写文件"。
+
+
+def test_atomic_write_text_keeps_old_content_when_replace_fails(tmp_path, monkeypatch):
+    """写盘途中被打断（用 os.replace 抛错模拟）→ 目标文件**保持原内容**。"""
+    target = tmp_path / "shots.json"
+    target.write_text('{"old": 1}', encoding="utf-8")
+
+    def boom(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.replace", boom)
+    try:
+        artifact.atomic_write_text(target, '{"new": 2}')
+    except OSError:
+        pass      # 吞不吞由调用方决定；这里只关心盘上留下了什么
+    assert target.read_text(encoding="utf-8") == '{"old": 1}', "旧内容被破坏了"
+    assert not list(tmp_path.glob("*.tmp")), "半成品临时文件没清掉"
+
+
+def test_atomic_write_never_opens_target_for_writing(tmp_path, monkeypatch):
+    """★ 变异守卫：目标文件**只能**经 `os.replace` 出现，绝不直接打开来写。"""
+    import builtins
+
+    target = tmp_path / "a.json"
+    target.write_text("orig", encoding="utf-8")
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def spy(file, mode="r", *a, **k):  # noqa: ANN001, ANN002, ANN003, ANN202
+        opened.append(f"{file}|{mode}")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    artifact.atomic_write_text(target, "new")
+
+    writes = [o for o in opened if "w" in o.split("|")[1]]
+    assert writes and writes[0].startswith(str(target) + ".tmp"), f"直接写了目标文件：{writes}"
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_atomic_write_leaves_no_temp_and_matches_write_text_line_endings(tmp_path):
+    """行尾必须与 `Path.write_text` 一致（否则产物指纹漂移 → 下游误判「上游改过」）。"""
+    plain = tmp_path / "plain.txt"
+    atom = tmp_path / "atom.txt"
+    plain.write_text("x\ny\n", encoding="utf-8")
+    artifact.atomic_write_text(atom, "x\ny\n")
+    assert atom.read_bytes() == plain.read_bytes()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_atomic_write_bytes_roundtrip(tmp_path):
+    target = tmp_path / "seg.mp4"
+    artifact.atomic_write_bytes(target, b"\x00\x01\x02")
+    assert target.read_bytes() == b"\x00\x01\x02"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_atomic_write_creates_new_file(tmp_path):
+    """目标不存在也要能写（第一次产出）。"""
+    target = tmp_path / "new.json"
+    artifact.atomic_write_text(target, "{}\n")
+    assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_load_json_safe_returns_default_for_missing_and_broken(tmp_path):
+    sentinel = object()
+    missing = tmp_path / "none.json"
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    assert artifact.load_json_safe(missing, default=sentinel) is sentinel
+    assert artifact.load_json_safe(broken, default=sentinel) is sentinel
+    ok = tmp_path / "ok.json"
+    ok.write_text('{"a": 1}', encoding="utf-8")
+    assert artifact.load_json_safe(ok, default=None) == {"a": 1}
+
+
+def test_safe_int_never_raises():
+    assert artifact.safe_int("2") == 2
+    assert artifact.safe_int("v2", default=1) == 1
+    assert artifact.safe_int(None, default=1) == 1
+    assert artifact.safe_int(["x"], default=1) == 1
+    assert artifact.safe_int(3.9, default=1) == 3
+
+
+# ---- 接线到既有产物（shots.json / manifest.json）----------------------------
+
+
+def test_write_shots_json_is_atomic(tmp_path, monkeypatch):
+    """`write_shots_json` 也走原子写 —— 手改的真相源不许被半截内容顶掉。"""
+    from lvs import workspace as ws_mod
+
+    target = tmp_path / "shots.json"
+    target.write_text("[]", encoding="utf-8")
+
+    def boom(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.replace", boom)
+    try:
+        ws_mod.write_shots_json(target, {"shots": []})
+    except OSError:
+        pass
+    assert target.read_text(encoding="utf-8") == "[]", "shots.json 被写坏（非原子）"
+
+
+def test_manifest_version_survives_hand_edited_garbage(tmp_path):
+    """手改成 `"version": "v2"` 不许崩（读不了清单 = 整个任务打不开）。"""
+    d = tmp_path / ".work" / "t"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text('{"version": "v2", "stages": {}}', encoding="utf-8")
+    ws = Workspace.read("t", root=tmp_path)
+    assert ws.manifest_version() == 1
+
+
+def test_manifest_version_still_warns_on_newer_version(tmp_path, capsys):
+    """高版本仍要出声（safe_int 不许把「读不懂」变成「不说」）。"""
+    from lvs.workspace import MANIFEST_VERSION
+
+    d = tmp_path / ".work" / "t"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(
+        '{"version": %d, "stages": {}}' % (MANIFEST_VERSION + 5), encoding="utf-8"
+    )
+    Workspace.read("t", root=tmp_path)
+    assert "结构版本" in capsys.readouterr().out

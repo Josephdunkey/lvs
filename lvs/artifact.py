@@ -21,14 +21,25 @@
 - 唯一的漏网：把内容改回完全相同的大小、同时把 mtime 也改回原值（需要刻意伪造）
 - 代价：复制/恢复文件会更新 mtime → 判为"变了" → 要求重审/重跑。
   这是**安全方向**的误报，可以接受（多说一句话，不会放过错产物）。
+
+## 另有：落盘底座（原子写 + 耐坏读）
+
+`atomic_write_text` / `atomic_write_bytes` 是**全项目唯一的原子写实现** ——
+原先只有 `workspace._write_manifest` 内联了一份，`shots.json`、门禁账本
+`gates.json`、成片 `final.mp4` 都是裸 `write_text`：被打断就留半截文件，
+而读方普遍「坏文件 → 退默认值」，于是**半截文件 = 记录无声作废**。
+`load_json_safe` / `safe_int` 是「读给人手改的 JSON」的耐坏入口（坏值给默认，不抛）。
+收敛成一份的理由与指纹一样：同一个判断写两遍必然漂移。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 def _stat_sig(path: Path) -> str:
@@ -158,3 +169,74 @@ def refs(paths: Iterable[Path]) -> list[ArtifactRef]:
     **改了图、`voice` 仍判"已完成"**，拿旧图继续配音合成，全程不报错。
     """
     return [ArtifactRef.of(p) for p in paths if p.is_file() or p.is_dir()]
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """**原子**写文本：写临时文件 → `fsync` → `os.replace`。失败清理临时文件并重抛。
+
+    `os.replace` 在同一文件系统上原子（Windows 与 POSIX 都保证），所以读方要么
+    看到旧的完整文件、要么看到新的完整文件，**绝不会看到「一半」**。
+
+    行尾与 `Path.write_text` 一致（`newline=None`，Windows 上 `\n` → CRLF）——
+    换实现**不改变既有文件的字节格式**：改了格式会让产物指纹（size+mtime）变化，
+    下游被无端判为「上游改过」，白重跑一遍。
+
+    失败**重抛**（临时文件已清理）：吞不吞由调用方决定（清单选择吞、账本选择报）。
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())          # 先确保数据真的落盘，再替换
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)    # 半成品不许留在目录里
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """原子写字节（二进制产物用）。语义与 `atomic_write_text` 相同。"""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def load_json_safe(path: Path, default: Any = None) -> Any:
+    """读 JSON；**不存在 / 读不动 / 不是合法 JSON** 一律返回 `default`（不抛）。
+
+    它**不区分**「没有」与「坏了」—— 需要区别对待的调用方（例如门禁账本必须
+    「保留原文 + 大声报」）把 `default` 当哨兵自行判断，见 `pipeline.load`。
+    """
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    """把任意值转 `int`，转不动就返回 `default`（不抛）。
+
+    为什么不用裸 `int(x or 1)`：真源是**给人手改**的 `shots.json` / `manifest.json`，
+    手一抖写成 `"v2"` 就是 `ValueError`，而它发生在「读清单」路径上 ——
+    读不了清单 = 整个任务打不开。版本号读不懂的正确反应是**按最老版本处理 + 说一声**，不是崩。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

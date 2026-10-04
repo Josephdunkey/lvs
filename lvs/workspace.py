@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -84,8 +83,8 @@ def write_shots_json(path: Path, data: dict[str, Any]) -> None:
     `Workspace.write_shots` 与界面（它拿到的是任务目录而非 Workspace）都走这里，
     免得同一个文件有第二种格式 —— 它同时是给人手改、给界面读的真相源（D14）。
     """
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    artifact.atomic_write_text(
+        path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
 
 
@@ -224,7 +223,7 @@ class Workspace:
         # 若版本**高于**本代码已知的：明确提示，但不崩 ——
         # 新版工具写的清单被老版工具读到，最可能的现象是"某些新字段被忽略"，
         # 静默继续比报错更危险，所以这里要说一声。
-        seen = int(data.get("version") or 1)
+        seen = artifact.safe_int(data.get("version") or 1, 1)
         if seen > MANIFEST_VERSION:
             print(
                 f"[清单] {self.manifest_path.name} 的结构版本是 {seen}，"
@@ -236,12 +235,12 @@ class Workspace:
 
     def manifest_version(self) -> int:
         """本任务清单的结构版本（老清单无字段时按 1 计）。"""
-        return int(self.manifest.get("version") or 1)
+        return artifact.safe_int(self.manifest.get("version") or 1, 1)
 
     def _write_manifest(self) -> None:
         """**原子**写回清单。
 
-        ★ 为什么必须原子：`write_text` 是"先截断、再写" —— 在截断与写完之间
+        ★ 为什么必须原子：`write_text` 是「先截断、再写」—— 在截断与写完之间
         （进程被 Ctrl-C / 断电 / 崩溃），盘上留下的是一个**被截断的 JSON**。
         而 `_read_manifest` 遇到坏 JSON 会**静默重建成空**（`stages: {}`）——
         于是**断点续跑的全部记录被无声丢弃**，下次从零重跑几百镜。
@@ -249,25 +248,16 @@ class Workspace:
         这个窗口在串行下只是小概率（刚好撞上写盘那一刻），但**每镜写一次**
         （654 镜 = 654 次整文件重写）把它放大；将来若并行，会变成必然。
 
-        做法是标准的三步：写临时文件 → `fsync` 落盘 → `os.replace` 原子替换。
-        `os.replace` 在同一文件系统上是**原子**的（Windows 与 POSIX 都保证），
-        所以读方要么看到旧的完整文件、要么看到新的完整文件，**绝不会看到"一半"**。
+        做法（临时文件 → fsync → os.replace）已收敛到 `artifact.atomic_write_text`，
+        与 `shots.json`、门禁账本共用一份实现 —— 免得三处各自演化。
+        这里吞掉 `OSError` 是刻意的：写盘失败（只读盘 / 磁盘满）不该让流水线崩，
+        与「清单损坏不崩」的既有取舍一致。
         """
         payload = json.dumps(self.manifest, ensure_ascii=False, indent=2) + "\n"
-        tmp = self.manifest_path.with_name(self.manifest_path.name + ".tmp")
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())      # 先确保数据真的落盘，再替换
-            os.replace(tmp, self.manifest_path)
+            artifact.atomic_write_text(self.manifest_path, payload)
         except OSError:
-            # 写盘失败（只读盘 / 磁盘满）不该让流水线崩 —— 尽力清理临时文件后吞掉。
-            # 注意：这里**不**抛异常是刻意的，与"清单损坏不崩"的既有取舍一致。
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+            pass   # 临时文件已由 atomic_write_text 清理；不抛见上
 
     # ---- 阶段状态 ---------------------------------------------------------
 
