@@ -59,3 +59,15 @@ docs/demo/*.mp4
 .coverage
 .coverage.*
 htmlcov/
+
+# 短视频封面任务在仓库根留下的一次性产物（2026-10-05 实测量级：cover/base/hbase/prev 共 34 个文件 ≈ 40 MB）
+# ★ 用前导 / 锚定仓库根，避免误伤 lvs/ 或 tests/ 里同名的东西。
+/cover_*.png
+/cover_*.jpg
+/base_*.png
+/hbase_*.png
+/prev_*.jpg
+/hprev_*.jpg
+
+# 本地打包/离线安装缓存（pip download / wheel 产物）
+/wheelhouse/
