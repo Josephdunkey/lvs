@@ -857,3 +857,38 @@ def test_lint_diluted_message_explains_the_composition_drift():
         "leather shoes and a school bag")
     msg = next(f["why"] for f in findings if f["code"] == "A-diluted")
     assert "构图" in msg and "全身" in msg
+
+
+# ---- A-order：连字符复合词与中文 -------------------------------------------------
+#
+# 2026-10-06 踩坑：`{JUJI}` 的锚定是 `a shaven-headed Japanese man in his forties,
+# hollow-cheeked, ...` —— 特征明明在最前，却因 `\bshaved\b` / `\bcheek\b` 认不出
+# `shaven-headed` / `hollow-cheeked` 而**误报 A-order**。
+# 报警多了人就学会无视它，那比不报更糟 —— 所以这两类写法必须不报。
+
+
+def test_lint_hyphenated_compounds_do_not_false_alarm():
+    for anchor in (
+        "a shaven-headed Japanese man in his forties with a long face, hollow cheeks",
+        "a long-faced man with a shaven head and thick level brows",
+        "a hollow-cheeked woman in her thirties, sharp narrow eyes",
+    ):
+        codes = [f["code"] for f in cast_mod.lint_anchor(anchor)]
+        assert "A-order" not in codes, (anchor, codes)
+
+
+def test_lint_still_flags_identity_first():
+    """修误报不能把真问题一起放过：身份交代开头仍要报。"""
+    codes = [f["code"] for f in cast_mod.lint_anchor(
+        "a cheerful college student who loves music, with short black hair")]
+    assert "A-order" in codes
+
+
+def test_lint_order_check_understands_chinese_face_words():
+    """`\\b` 对汉字不成立 —— 中文锚定原先几乎一律数不到「脸型/眼睛」。"""
+    assert "A-order" not in [
+        f["code"] for f in cast_mod.lint_anchor("脸型瘦长的年轻妇人，二十岁上下，眼睛细长")
+    ]
+    assert "A-order" in [
+        f["code"] for f in cast_mod.lint_anchor("一个二十岁的姑娘，脸型瘦长，眼睛细长")
+    ]

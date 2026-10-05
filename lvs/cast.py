@@ -632,13 +632,45 @@ _PERSON_WORDS = re.compile(
 # 若开头是 "a lively Japanese college girl around 19" 这类身份交代，
 # 模型会把采样预算花在"活泼的大学生"这种抽象气质上，而不是"什么发型什么脸"。
 # 这是 MIDORI 那一版头发盖住耳朵的根因（锚定卡把发型写在第二小句）。
-_FACE_WORDS = re.compile(
-    r"\b(?:hair|haircut|bangs|fringe|ponytail|braid|curls?|bald|shaved|"
-    r"face|eyes?|eyebrows?|brows?|jaw|chin|cheek(?:bone)?s?|nose|mouth|lips?|"
-    r"skin|complexion|build|height|tall|short|slim|slender|lean|stocky|lanky|"
-    r"beard|moustache|scar|mole|freckles?|glasses|wrinkles?|发型|头发|发丝|刘海|鬓角|辫子|马尾|卷发|光头|寸头|平头|短发|长发|脸型|脸庞|面庞|面容|面孔|鹅蛋脸|方脸|圆脸|瘦脸|五官|眼睛|双眼|眼眸|瞳色|眉毛|浓眉|下颌|下巴|颧骨|脸颊|鼻梁|鼻子|嘴巴|嘴唇|肤色|皮肤|身形|身材|体格|体型|个子|皱纹|痣|疤痕|伤疤|胡须|络腮胡|胡子)\b",
-    re.IGNORECASE,
+_FACE_WORD_LIST: tuple[str, ...] = (
+    "hair", "haircut", "bangs", "fringe", "ponytail", "braid", "curls?", "bald", "shaved", "face",
+    "eyes?", "eyebrows?", "brows?", "jaw", "chin", "cheek(?:bone)?s?", "nose", "mouth", "lips?",
+    "skin", "complexion", "build", "height", "tall", "short", "slim", "slender", "lean", "stocky",
+    "lanky", "beard", "moustache", "scar", "mole", "freckles?", "glasses", "wrinkles?", "发型", "头发",
+    "发丝", "刘海", "鬓角", "辫子", "马尾", "卷发", "光头", "寸头", "平头", "短发", "长发", "脸型", "脸庞", "面庞", "面容", "面孔",
+    "鹅蛋脸", "方脸", "圆脸", "瘦脸", "五官", "眼睛", "双眼", "眼眸", "瞳色", "眉毛", "浓眉", "下颌", "下巴", "颧骨", "脸颊", "鼻梁",
+    "鼻子", "嘴巴", "嘴唇", "肤色", "皮肤", "身形", "身材", "体格", "体型", "个子", "皱纹", "痣", "疤痕", "伤疤", "胡须", "络腮胡",
+    "胡子", "shaven"
 )
+
+def _face_words(*, derive: bool) -> re.Pattern[str]:
+    """由**同一份**词表编出两个正则；不要各自维护一份（这项目吃过这亏）。
+
+    两者的差别只在**尾后缀**与**边界**：
+
+    - `derive=False`（`_FACE_WORDS`，计数用）：词根本身，边界等于 `\b`。
+    - `derive=True`（`_FACE_WORDS_FIRST`，判「特征有没有放最前」）：额外认
+      `-ed/-en/-s` 派生词与**连字符复合词**，并且边界改成「两侧不是拉丁字母」。
+
+    ★ 为什么必须多这一档（2026-10-06 踩坑）：`{JUJI}` 的锚定写成
+      `a shaven-headed Japanese man in his forties, hollow-cheeked, ...` ——
+      特征明明在最前，但 `shaven-headed`/`hollow-cheeked` 是**连字符复合词**，
+      `\bshaved\b`、`\bcheek\b` 一个都不命中，`lint` 于是误报 `A-order`
+      （"第一小句里没有可画的外貌特征"）。**特征前置的正确写法反而被报警**，
+      报警多了人就学会无视它 —— 那比不报更糟。
+
+    ★ 顺带修掉的第二个坑：`\b` 对中文**基本不成立**（汉字本身是 word 字符，
+      `\b脸型` 只在行首或标点后才命中）。所以中文锚定里"脸型/眼睛/浓眉"这些词
+      原先几乎一律数不到。两侧改成「非拉丁字母」后中文才算得进来。
+    """
+    joined = "|".join(sorted(_FACE_WORD_LIST, key=len, reverse=True))
+    tail = r"(?:s|es|ed|en|d)?" if derive else ""
+    return re.compile(rf"(?<![A-Za-z])(?:{joined}){tail}(?![A-Za-z])", re.IGNORECASE)
+
+
+_FACE_WORDS = _face_words(derive=False)
+_FACE_WORDS_FIRST = _face_words(derive=True)
+
 
 
 def lint_anchor(anchor: str, *, max_words: int = ANCHOR_MAX_WORDS) -> list[dict[str, str]]:
@@ -661,7 +693,7 @@ def lint_anchor(anchor: str, *, max_words: int = ANCHOR_MAX_WORDS) -> list[dict[
 
     # 特征是否放在最前（判据：第一小句里有没有可画的骨相词）
     first = re.split(r"[,;，；]", text, maxsplit=1)[0]
-    if not _FACE_WORDS.search(first):
+    if not _FACE_WORDS_FIRST.search(first):
         out.append({
             "code": "A-order",
             "snippet": first.strip()[:40],
