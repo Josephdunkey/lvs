@@ -41,7 +41,7 @@
         "end": { "type": ["number", "null"] },
         "status": { "type": "string" },
         "generated_by": { "type": "string" },
-        "resolved_by": { "type": "string" },
+        "resolved_by": { "type": ["string", "null"] },
         "gen_workflow": { "type": ["string", "null"] },
         "audio_path": { "type": ["string", "null"] },
         "audio_duration": { "type": ["number", "null"] },

@@ -340,15 +340,24 @@ def tags(parse_data: dict[str, Any], config: Config, lines: list[str]) -> list[s
 
 def douyin_captions(lines: list[str], tag_list: list[str], config: Config) -> list[str]:
     """抖音口播文案（≥3 条候选，每条都带话题）。"""
-    base = "".join(lines) if lines else str(config.get("publish.book_title", "") or "")
+    # 底本用分隔符拼：不然三行封面字会连成一句读不通的长串（例：他撞见一场夜宴席上全是死人…）。
+    # `publish.douyin_join_compact = true` 退回旧的"直接相连"口径。
+    sep = "" if config.get("publish.douyin_join_compact", False) else "｜"
+    base = sep.join(lines) if lines else str(config.get("publish.book_title", "") or "")
     intro = str(config.get("publish.intro", "") or "").strip()
     topics = " ".join(f"#{t}" for t in tag_list[:DOUYIN_TAG_MAX])
     short = lines[0] if lines else base
     # 第 3 条原本只挂 publish.intro；没配 intro 时它就退化成"一串光秃秃的话题"。
     # 没 intro 就用最短的那行封面字兜底（钩子短句，信息流里更好用）。
+    #
+    # ★ 第 2 条**必须与第 1 条不同形**（2026-10-06 实测）：两行封面字时
+    #   `"｜".join(lines)` 与 `lines[0]｜lines[-1]` 是**同一个字符串**，
+    #   去重后候选只剩 2 条 —— "≥3 条候选"的承诺静默失守，而调用方看不出来。
+    #   第 2 条改用顿读口径（首行＋末行，逗号连接），与第 1 条的列举口径分开：
+    #   两行时是 `A｜B` / `A，B` / `A`，三行时是 `A｜B｜C` / `A，C` / `A`，都不会撞。
     cands = [
         f"{base} {topics}".strip(),
-        f"{lines[0]}｜{lines[-1]} {topics}".strip() if len(lines) >= 2 else f"{base} {topics}".strip(),
+        f"{lines[0]}，{lines[-1]} {topics}".strip() if len(lines) >= 2 else f"{base} {topics}".strip(),
         f"{intro or short} {topics}".strip(),
     ]
     out: list[str] = []
@@ -772,7 +781,7 @@ def build_meta(ws: Workspace, config: Config, *, lines_arg: Any = None, base_arg
             "captions": douyin_captions(lines, tag_list, config),
             "hashtags": [f"#{t}" for t in tag_list[:DOUYIN_TAG_MAX]],
         },
-        "keywords": list(dict.fromkeys(tag_list + lines)),
+        "keywords": list(dict.fromkeys(tag_list)),
         "warnings": warnings,
     }
 

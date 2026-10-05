@@ -892,3 +892,69 @@ def test_lint_order_check_understands_chinese_face_words():
     assert "A-order" in [
         f["code"] for f in cast_mod.lint_anchor("一个二十岁的姑娘，脸型瘦长，眼睛细长")
     ]
+
+
+def test_parse_card_id_prefers_explicit_slot_over_latin_alias():
+    """★ 2026-10-06 真机坑：括号里既有罗马字又有 `{SLOT}` 时，早期版本取罗马字。
+
+    `良岑宗贞（… / Munesada / 遍昭 / 僧正遍昭 / {SORIN}）` 被登记成 `MUNESADA`，
+    于是拍摄稿里的 `{SORIN}` 变成"库里没有"的幽灵槽位（PLAN、无锚定）：
+    `apply_slots` 绑定不上（prompt 里留下字面量 `{SORIN}`）、`gate_missing` 报缺人、
+    定妆候选一张也渲染不出来，而界面上只看得到一句"锚定描述为空"。
+    槽位名是作者显式声明的契约，不该由罗马字去猜。
+    """
+    text = """### 良岑宗贞（よしみね の むねさだ / Munesada / 遍昭 / 僧正遍昭 / {SORIN}）
+
+- 锚定描述：
+```
+a Japanese courtier in his thirties with a long narrow face
+```
+"""
+    entries = cast_mod.parse_card(text)
+    assert "SORIN" in entries, f"应以 {{SORIN}} 为 ID，实得 {set(entries)}"
+    assert entries["SORIN"].display == "良岑宗贞"
+    assert entries["SORIN"].state == "IMG"
+    assert "MUNESADA" not in entries
+
+
+def test_parse_card_heading_with_slash_alias():
+    """`### 屋秋津 / 海盗（{PIRATE}）`：标题里带斜杠的常用名。
+
+    早期正则要求「名字」后面**直接**跟括号，多余的 `/ 海盗` 让整节匹配失败 ——
+    这一节在库里凭空消失，拍摄稿里的 `{PIRATE}` 同样变成幽灵槽位。
+    斜杠后的常用名还要收成别名，否则"本集出现"判定搜不到「海盗」二字。
+    """
+    text = """### 屋秋津 / 海盗（{PIRATE}）
+
+- 锚定描述：
+```
+a burly Japanese man in his forties with a broad weather-beaten face
+```
+"""
+    entries = cast_mod.parse_card(text)
+    assert "PIRATE" in entries, f"标题带斜杠别名时也要读出这一节，实得 {set(entries)}"
+    assert entries["PIRATE"].display == "屋秋津"
+    assert "海盗" in entries["PIRATE"].aliases
+    assert entries["PIRATE"].anchor.startswith("a burly")
+
+def test_lint_anchor_accepts_identity_nouns():
+    """★ 2026-10-06 真机坑：`nobleman` / `courtier` 不在人称词表里。
+
+    `{KIYOYUKI}`＝「a Japanese nobleman in his sixties with a round full face」、
+    `{SORIN}`＝「a Japanese courtier in his thirties with a long narrow face」——
+    两段主语齐全、完全可画，却被报 A-nosubject。**假阳性比漏报更贵**：
+    报警多了操作者就学会无视它，真的丢主语那一版（MIDORI）也就一起被无视了。
+    """
+    for anchor in (
+        "a Japanese nobleman in his sixties with a round full face, thick straight eyebrows",
+        "a Japanese courtier in his thirties with a long narrow face, thin arched eyebrows",
+    ):
+        codes = [r["code"] for r in cast_mod.lint_anchor(anchor)]
+        assert "A-nosubject" not in codes, f"{anchor!r} 被误报：{codes}"
+
+
+def test_lint_anchor_still_catches_missing_subject():
+    """补身份词表**不能**把真问题一起放过：feature-first 丢主语仍要报。"""
+    anchor = ("a very short cropped haircut with the ears and nape fully exposed, "
+              "a small neat oval face, a slight slender build")
+    assert "A-nosubject" in [r["code"] for r in cast_mod.lint_anchor(anchor)]

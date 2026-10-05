@@ -475,3 +475,18 @@ def test_cover_vertical_lines_are_left_aligned(tmp_path: Path):
     starts = _line_starts(out, publish.DOUYIN_SIZE)
     assert len(starts) >= 2, f"至少要两行才谈得上对齐，实测 {len(starts)} 行：{starts}"
     assert max(starts) - min(starts) <= 6, f"竖版行首没对齐：{starts}"
+
+
+def test_douyin_captions_stay_distinct_with_three_lines(tmp_path: Path):
+    """三行封面字（本系列的实际口径）时必须给出 3 条**互不相同**的候选。
+
+    两行时 `"｜".join` 与 `首｜尾` 同形，去重后只剩 2 条 —— 这条用例把两种
+    行数都钉住，免得下次又只测一种。
+    """
+    lines = ["他撞见一场夜宴", "席上全是死人", "《雨月物语》血溅宫闱"]
+    got = publish.douyin_captions(lines, ["书", "怪谈"], _config(tmp_path, intro=""))
+    assert len(got) == 3, got
+    assert len(set(got)) == 3, got
+    two = publish.douyin_captions(["甲", "乙"], ["书", "怪谈"], _config(tmp_path, intro=""))
+    assert len(two) == 3, two
+    assert len(set(two)) == 3, two

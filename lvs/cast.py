@@ -74,7 +74,11 @@ LIB_CAST_DIRNAME = "_cast"
 SLOT = re.compile(r"\{([A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,15})\}")
 
 # 定妆卡里的角色小节标题：`### 直子（なおこ / Naoko）`
-_CARD_CHAR_HEAD = re.compile(r"^#{3,4}\s*(?P<name>[^#\s（(]+)\s*(?:[（(](?P<alias>[^）)]*)[）)])?\s*$")
+_CARD_CHAR_HEAD = re.compile(
+    r"^#{3,4}\s*(?P<name>[^#\s（(/／]+)"
+    r"(?P<extra>[^#（(]*)"
+    r"(?:[（(](?P<alias>[^）)]*)[）)])?\s*$"
+)
 
 # 定妆卡里的锚定描述标签
 _CARD_ANCHOR_LABEL = re.compile(r"锚定描述|形象锚定|定妆描述")
@@ -428,7 +432,13 @@ def parse_card(text: str) -> dict[str, CastEntry]:
             i += 1
             continue
         display = m.group("name").strip()
+        extra = (m.group("extra") or "").strip()
         alias = (m.group("alias") or "").strip()
+        if extra:
+            # ★ `### 屋秋津 / 海盗（{PIRATE}）` 这类标题：斜杠后的常用名必须收成别名。
+            # 不收的话「本集出现」判定搜不到「海盗」二字（标题解析又早退），
+            # 整节人物在库里凭空消失 —— 正是本函数上一次踩的坑的下一层。
+            alias = f"{extra} / {alias}" if alias else extra
         level = _heading_level(lines[i])
 
         # 收集本小节。★ 边界按**标题层级**判：遇到同级或更高级的标题就停。
@@ -622,7 +632,18 @@ _PROP_WORDS = re.compile(
 # 这是"为了修一个问题而引入另一个"的典型，所以用一条规则把它钉死。
 _PERSON_WORDS = re.compile(
     r"(?<![A-Za-z])(?:man|men|woman|women|boy|girl|person|people|youth|teen|teenager|"
-    r"student|male|female|guy|lady|gentleman|figure|child|kid|adult|elderly|senior|男人|男子|男生|男孩|女人|女子|女生|女孩|少年|少女|青年|壮年|中年|年轻人|老人|老者|长者|人影|身影|人物|学生|孩子|孩童|儿童|妇人|姑娘|老头|老太)"
+    r"student|male|female|guy|lady|gentleman|figure|child|kid|adult|elderly|senior|"
+    # ★ 2026-10-06 补：身份类名词（nobleman / courtier / monk …）。缺了它们，
+    # `{KIYOYUKI}`「a Japanese nobleman in his sixties with …」与 `{SORIN}`
+    # 「a Japanese courtier in his thirties with …」会被误报 A-nosubject ——
+    # 而它们主语齐全、完全可画。**假阳性比漏报更贵**：报警多了人就学会无视。
+    # 只收「只能当名词」的词；official / noble 这类兼作形容词的一律不收
+    # （收了会把「official robes」这种真丢主语的写法放过）。
+    r"nobleman|noblewoman|courtier|monk|nun|priest|scholar|warrior|samurai|soldier|"
+    r"merchant|servant|attendant|retainer|aristocrat|peasant|farmer|fisherman|sailor|"
+    r"hunter|thief|beggar|lad|lass|maiden|squire|craftsman|blacksmith|painter|poet|"
+    r"widow|orphan|nurse|teacher|"
+    r"男人|男子|男生|男孩|女人|女子|女生|女孩|少年|少女|青年|壮年|中年|年轻人|老人|老者|长者|人影|身影|人物|学生|孩子|孩童|儿童|妇人|姑娘|老头|老太|僧人|和尚|武士|商人|学者|贵族|公卿|侍从|农夫|渔夫|猎人|盗贼|乞丐|文士|画师|尼姑)"
     r"(?![A-Za-z])",
     re.IGNORECASE,
 )
@@ -775,7 +796,7 @@ def _split_aliases(alias: str) -> list[str]:
     raw = re.split(r"[/／，,、;；|]", alias)
     out: list[str] = []
     for piece in raw:
-        token = piece.strip().strip('"\'“”「」《》()（）')
+        token = piece.strip().strip('"\'“”「」《》()（）{}')
         if not token:
             continue
         if 2 <= len(token) <= 8 and "的" not in token:
@@ -793,7 +814,22 @@ def entry_matches_text(entry: CastEntry, text: str) -> bool:
 
 
 def _id_from_display(display: str, alias: str = "") -> str:
-    """给人读的显示名推一个 ID：优先用括号里的拉丁别名，否则用显示名本身。"""
+    """给人读的显示名推一个 ID。
+
+    优先级：**括号里显式写下的 `{SLOT}`** → 拉丁别名 → 显示名本身。
+
+    ★ 2026-10-06 修的坑：早期版本只认拉丁别名，于是定妆卡里明明白白写着的
+    `{SORIN}` / `{KOMACHI}` / `{KIYOYUKI}` 被同一个括号里的罗马字盖掉 ——
+    `良岑宗贞（… / Munesada / 遍昭 / 僧正遍昭 / {SORIN}）` 登记成了 `MUNESADA`。
+    后果是**静默**的：拍摄稿里的 `{SORIN}` 变成一个库里没有的幽灵槽位
+    （PLAN、无锚定），`apply_slots` 绑定不上、`gate_missing` 报缺人、
+    定妆候选一张也渲染不出来，而错因只看得到"锚定描述为空"。
+    槽位名是作者显式声明的契约，不该由罗马字去猜。
+    """
+    for src in (alias, display):
+        m = SLOT.search(src or "")
+        if m:
+            return m.group(1)
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", alias or ""):
         low = token.lower()
         if low in {"san", "kun", "chan", "the"}:

@@ -89,6 +89,19 @@ def test_real_work_artifacts_pass_the_contract(kind, name):
         assert schemas.validate(kind, data) == [], f"{path} 过不了 {kind} 契约"
 
 
+def test_shots_contract_allows_unresolved_resolved_by():
+    """★ 2026-10-06：`shots.py` 写完、`assets` 还没跑时，`resolved_by` 就是 `None`。
+
+    契约原先只许 string，于是**同一份产物在流水线中途过不了自己的契约**：
+    实测 `.work/UGE07/shots.json` 在 assets 跑到一半时被判违约（21 处 None），
+    而全部跑完的同名产物是绿的 —— 这条红/绿取决于进度，判据在说谎。
+    写入方与判据打架时先问"哪个才是真的"：答案是 `null`（"还没解出"），
+    它与同段的 `asset_path` / `audio_path` / `gen_workflow` 同档，都该可空。
+    """
+    doc = _doc([{**GOOD, "resolved_by": None}])
+    assert schemas.validate("shots", doc) == []
+
+
 def test_real_configs_pass_the_contract():
     found = [ROOT / name for name in REAL_CONFIGS if (ROOT / name).is_file()]
     if not found:
