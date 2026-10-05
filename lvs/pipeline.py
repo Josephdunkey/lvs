@@ -190,6 +190,35 @@ def subjects(ws: Workspace, gate: Gate, config=None) -> list[Path]:  # noqa: ANN
     return out
 
 
+def subject_unit(gate: Gate) -> str:
+    """计数的单位。`cast` 门数的是**槽位**（人），不是文件 ——
+
+    说"个文件"会让人以为这道门看的是 `_cast/lock.json`（那正是修掉的旧语义）。
+    """
+    return "个槽位" if tuple(gate.kinds) == ("cast",) else "个文件"
+
+
+def subject_state(ws: Workspace, gate: Gate, config=None) -> tuple[str, int]:  # noqa: ANN001
+    """一道门的**产物状态**：`(指纹, 计数)`。判活 / 批准都走这一个入口。
+
+    ★ `cast`（G2）是唯一例外，别把它改回去：
+
+    G2 守的不是"某个文件变了没有"，而是"**本集**这些人物的脸已冻结且锚定没动过"。
+    定妆库 `_cast/lock.json` 是**全书共享**的 —— 拿它当指纹等于把九集的定妆门
+    绑成一串：任意一集增删一个人，其余各集全部假失效（2026-10-06 实测：
+    给 008 加 4 人、009 加 2 人，各触发一轮 UGE01-UGE09 重新批准）。
+    所以 cast 门走 `cast.slots_fingerprint()` —— 只算本集槽位。
+
+    其余门（拍摄稿 / 分镜表 / 图 / 音 / 成片）本来就是"这个产物变没变"，照旧。
+    """
+    if tuple(gate.kinds) == ("cast",):
+        from lvs import cast as cast_mod
+
+        return cast_mod.slots_fingerprint(ws, config)
+    paths = subjects(ws, gate, config)
+    return fingerprint(paths), count_files(paths)
+
+
 def _manuscript_of(ws: Workspace) -> Path | None:
     """本任务的拍摄稿。优先 parse.json 记的源路径，退到 source.md。"""
     parse_path = ws.path("parse.json")
@@ -352,9 +381,7 @@ def evaluate(ws: Workspace, gate: Gate, *, config=None, led: Ledger | None = Non
 
     led = led if led is not None else load(ws)
     rec = led.gates.get(gate.id) or GateRecord()
-    paths = subjects(ws, gate, config)
-    fp = fingerprint(paths)
-    n = count_files(paths)
+    fp, n = subject_state(ws, gate, config)
     ok, reason = criteria_mod.check(gate.id, ws, config)
 
     if rec.state in (STATE_SKIPPED,):
@@ -392,9 +419,7 @@ def next_gate(ws: Workspace, *, config=None) -> GateStatus | None:  # noqa: ANN0
 
 def _stamp(ws: Workspace, gate: Gate, state: str, *, by: str, note: str, config=None) -> GateStatus:  # noqa: ANN001
     led = load(ws)
-    paths = subjects(ws, gate, config)
-    fp = fingerprint(paths)
-    n = count_files(paths)
+    fp, n = subject_state(ws, gate, config)
     led.gates[gate.id] = GateRecord(
         state=state, at=_now(), by=by or "", note=note or "", fingerprint=fp, files=n,
     )
@@ -406,8 +431,15 @@ def _stamp(ws: Workspace, gate: Gate, state: str, *, by: str, note: str, config=
 
 def approve(ws: Workspace, token: str, *, by: str = "", note: str = "", config=None) -> GateStatus:  # noqa: ANN001
     gate = resolve_gate(token)
-    paths = subjects(ws, gate, config)
-    if count_files(paths) == 0:
+    fp, n = subject_state(ws, gate, config)
+    if n == 0 and tuple(gate.kinds) == ("cast",):
+        raise GateError(
+            f"{gate.id}（{gate.title}）：本集还没有可锚定的人物槽位，无从批准。\n"
+            f"  在等的是：拍摄稿里出现 {{人物}} 槽位（先 `lvs parse`；拆完镜 `lvs shots` 也行）。\n"
+            f"  若本集确实是纯空镜 / 纯图文卡："
+            f"`lvs gate --task {ws.task} --skip {gate.id} --note 原因`。"
+        )
+    if n == 0:
         raise GateError(
             f"{gate.id}（{gate.title}）的产物还没生成，无从批准。\n"
             f"  在等的是：{gate.what}\n"
@@ -488,8 +520,8 @@ def block_message(ws: Workspace, st: GateStatus, *, reason: str = "") -> str:
     if st.state == STATE_STALE:
         lines += [
             "",
-            f"  批准时指纹 {st.record.fingerprint}（{st.record.at}，{st.record.files} 个文件）",
-            f"  现在指纹   {st.fingerprint or '（产物已不在）'}（{st.files} 个文件）",
+            f"  批准时指纹 {st.record.fingerprint}（{st.record.at}，{st.record.files} {subject_unit(st.gate)}）",
+            f"  现在指纹   {st.fingerprint or '（产物已不在）'}（{st.files} {subject_unit(st.gate)}）",
             "  —— 产物在批准之后被改动过。请重新看一遍，再决定是否放行。",
         ]
     elif st.record.note and st.state == STATE_REJECTED:
@@ -579,7 +611,7 @@ def render_status(ws: Workspace, sts: list[GateStatus]) -> str:
     elif nxt.files == 0:
         lines.append(f"    产物还没生成，先跑：{_stage_hint(g)}")
     else:
-        lines.append(f"    产物已就绪（{nxt.files} 个文件），审完再放行：")
+        lines.append(f"    产物已就绪（{nxt.files} {subject_unit(nxt.gate)}），审完再放行：")
         lines.append(f"      lvs gate --task {ws.task} --approve {g.id} --note \"…\"")
     return "\n".join(lines)
 
@@ -602,7 +634,7 @@ def next_action_hint(ws: Workspace, *, config=None) -> str:  # noqa: ANN001
     if st.files == 0:
         return _stage_hint(st.gate)
     return (
-        f"产物已就绪（{st.files} 个文件）—— 审完再放行："
+        f"产物已就绪（{st.files} {subject_unit(st.gate)}）—— 审完再放行："
         f"lvs gate --task {ws.task} --approve {st.gate.id} --note \"…\""
     )
 
@@ -663,7 +695,7 @@ def run_command(config, ws, args) -> int:  # noqa: ANN001 - 由 cli 传入
         if getattr(args, "approve", None):
             st = approve(ws, args.approve, by=by, note=note, config=config)
             if not as_json:
-                print(f"✅ {st.gate.id}·{st.gate.title} 已批准（{st.files} 个文件，指纹 {st.fingerprint}）")
+                print(f"✅ {st.gate.id}·{st.gate.title} 已批准（{st.files} {subject_unit(st.gate)}，指纹 {st.fingerprint}）")
                 if not st.criterion_ok:
                     # 批准已记入账本（人的决定要留痕），但门**仍然关着** —— 必须说清楚，
                     # 否则"明明 approved 却走不动"是最让人困惑的状态。
@@ -692,7 +724,7 @@ def run_command(config, ws, args) -> int:  # noqa: ANN001 - 由 cli 传入
                 elif nxt.files == 0:
                     print(f"{nxt.gate.id}·{nxt.gate.title} 还没产物 → 先跑：{_stage_hint(nxt.gate)}")
                 else:
-                    print(f"{nxt.gate.id}·{nxt.gate.title} 待审（{nxt.files} 个文件）→ 看：")
+                    print(f"{nxt.gate.id}·{nxt.gate.title} 待审（{nxt.files} {subject_unit(nxt.gate)}）→ 看：")
                     for p in subjects(ws, nxt.gate, config):
                         print(f"  {p}")
             else:

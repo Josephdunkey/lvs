@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from lvs import pipeline as pl
+from lvs import cast as cast_mod
 
 
 class _Ws:
@@ -611,3 +612,100 @@ def test_ledger_version_survives_hand_edited_garbage(ws: _Ws):
     """手改成 `"version": "v2"` → 不许崩（读不了账本 = 门禁全线不可用）。"""
     ws.path(pl.LEDGER_NAME).write_text('{"version": "v2", "gates": {}}', encoding="utf-8")
     assert pl.load(ws).gates == {}
+
+
+# ---- G2 定妆门：指纹只算**本集槽位** ----------------------------------------
+#
+# 背景（2026-10-06 实测）：G2 原先指纹的是**全书共享**的 `_cast/lock.json`，
+# 而指纹只看 stat。于是任意一集增删人物 = 其余各集全部假失效
+# （给 UGE08 加 4 人、UGE09 加 2 人，各触发一轮 UGE01-UGE09 重新批准）。
+# 下面四条锁住新语义：**只认本集**。
+
+
+class _CastWs(_Ws):
+    """带 `try_load_shots()` 的替身（`cast.slots_of_task` 会读它）。"""
+
+    def try_load_shots(self) -> dict:
+        path = self.path("shots.json")
+        if not path.is_file():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _make_cast_dir(tmp_path: Path, chars: dict) -> _Cfg:
+    d = tmp_path / "cast"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "lock.json").write_text(
+        json.dumps({"characters": chars}, ensure_ascii=False), encoding="utf-8"
+    )
+    return _Cfg({"cast.dir": str(d)})
+
+
+def _entry(anchor: str = "a man with a long face", state: str = "REF") -> dict:
+    return {"display": "某某", "anchor": anchor, "state": state}
+
+
+def _src_ws(tmp_path: Path, task: str, text: str) -> _CastWs:
+    w = _CastWs(tmp_path, task=task)
+    w.ensure()
+    w.path("source.md").write_text(text, encoding="utf-8")
+    return w
+
+
+def _st(w, cfg, gate_id: str):  # noqa: ANN001, ANN202
+    return next(s for s in pl.statuses(w, config=cfg) if s.gate.id == gate_id)
+
+
+def test_cast_gate_ignores_other_episodes_adding_people(tmp_path: Path):
+    cfg = _make_cast_dir(tmp_path, {"A": _entry()})
+    w = _src_ws(tmp_path, "T1", "画面：{A} 站在门口")
+    pl.approve(w, "G2", config=cfg, note="人看过脸")
+    assert _st(w, cfg, "G2").open
+
+    # 别的集加了两个人 -> 全库 lock.json 被改写（stat 变了），本集不该受影响
+    _make_cast_dir(tmp_path, {"A": _entry(), "B": _entry(), "C": _entry()})
+    assert _st(w, cfg, "G2").open, "别的集加人，本集的定妆门不该失效"
+
+
+def test_cast_gate_goes_stale_when_own_anchor_changes(tmp_path: Path):
+    cfg = _make_cast_dir(tmp_path, {"A": _entry()})
+    w = _src_ws(tmp_path, "T1", "{A} 站在门口")
+    pl.approve(w, "G2", config=cfg, note="人看过脸")
+    assert _st(w, cfg, "G2").open
+
+    _make_cast_dir(tmp_path, {"A": _entry("a completely different man")})
+    assert _st(w, cfg, "G2").state == pl.STATE_STALE, "本集锚定改了必须失效"
+
+
+def test_cast_gate_goes_stale_when_own_state_drops(tmp_path: Path):
+    cfg = _make_cast_dir(tmp_path, {"A": _entry()})
+    w = _src_ws(tmp_path, "T1", "{A} 站在门口")
+    pl.approve(w, "G2", config=cfg, note="人看过脸")
+    _make_cast_dir(tmp_path, {"A": _entry(state="PLAN")})
+    assert _st(w, cfg, "G2").state == pl.STATE_STALE
+
+
+def test_cast_gate_slots_come_from_shots_when_present(tmp_path: Path):
+    cfg = _make_cast_dir(tmp_path, {"A": _entry(), "B": _entry()})
+    w = _src_ws(tmp_path, "T1", "拍摄稿里只有 {A}")
+    w.path("shots.json").write_text(
+        json.dumps({"shots": [{"id": 1, "visual": "{A} 与 {B} 对坐"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _fp, n = cast_mod.slots_fingerprint(w, cfg)
+    assert n == 2, "拆完镜后要以 shots.json 的槽位为准"
+
+
+def test_cast_gate_refuses_when_nothing_to_judge(tmp_path: Path):
+    cfg = _make_cast_dir(tmp_path, {"A": _entry()})
+    w = _CastWs(tmp_path, task="T9")
+    w.ensure()
+    with pytest.raises(pl.GateError):
+        pl.approve(w, "G2", config=cfg, note="还没 parse 就想批")
+
+
+def test_cast_gate_slotless_episode_is_still_approvable(tmp_path: Path):
+    """纯空镜 / 纯图文卡集：没有人可锚定，但**有稿** —— 不该被门禁卡死。"""
+    cfg = _make_cast_dir(tmp_path, {"A": _entry()})
+    w = _src_ws(tmp_path, "T1", "空镜：雨落在石阶上，没有人物。")
+    assert pl.approve(w, "G2", config=cfg, note="本集纯空镜").open

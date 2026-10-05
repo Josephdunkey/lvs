@@ -330,6 +330,63 @@ def slots_of_shots(shots: Iterable[dict[str, Any]]) -> dict[str, list[int]]:
     return {k: sorted(v) for k, v in sorted(found.items())}
 
 
+def slots_of_task(ws, config=None) -> list[str]:  # noqa: ANN001
+    """本集用到的槽位名（已排序）。`shots.json` 优先，退到拍摄稿 `source.md`。
+
+    为什么两处都看：拆镜后 `shots.json` 才是"真的会出图的画面"，
+    但拆镜之前（G0 之后、G1 之前）只有拍摄稿 —— 那时也得能判"本集要哪些人"。
+    """
+    names: set[str] = set()
+    shots = _shots_of(ws)
+    if shots:
+        names.update(slots_of_shots(shots))
+    if not names and ws is not None:
+        src = ws.path("source.md")
+        if src.is_file():
+            names.update(extract_slots(src.read_text(encoding="utf-8", errors="replace")))
+    return sorted(names)
+
+
+def slots_fingerprint(ws, config=None) -> tuple[str, int]:  # noqa: ANN001
+    """G2（定妆门）的指纹：**只算本集槽位**，返回 `(指纹, 槽位数)`。
+
+    ★ 为什么不指纹全库 `_cast/lock.json`（2026-10-06 实测的坑）：
+
+    `pipeline.subjects()` 对 G2 返回的是**全库共享**的 `_cast/lock.json` 一个文件，
+    而 `artifact.fingerprint()` 只看 stat、不看内容。于是**任意一集**增删人物都会改写它 ——
+    给 UGE08 加 4 人、给 UGE09 加 2 人，各触发一轮 UGE01-UGE09「定妆已失效」，
+    逼人对九集做九次毫无意义的重新批准。而"批准"唯一的成本就是**批到最后没人再看**。
+
+    本集真正该管的只有两件事：**这一集用到哪些人**、**这些人的锚定与参考图变了没有**。
+    所以指纹 = 本集槽位名 + 该人 state + 锚定文本 + 参考图 stat 签名 + 禁项。
+
+    边界：
+      · 有拍摄稿/分镜表但**一个槽位都没有**（纯空镜、纯图文卡集）→ 返回哨兵指纹，
+        让"批准"仍能进行（这类集的 G2 本来就是走过场）；
+      · 连拍摄稿都没有 → 返回空串 + 0，调用方据此**拒绝批准** ——
+        免得批出一个"本集有什么人都还不知道"的定妆门。
+    """
+    from lvs.artifact import entries, signature
+
+    names = slots_of_task(ws, config)
+    if not names:
+        has_manuscript = ws is not None and (
+            ws.path("source.md").is_file() or ws.path("shots.json").is_file()
+        )
+        return (signature("<no-slots>"), 1) if has_manuscript else ("", 0)
+
+    lock = load_lock(cast_dir(config))
+    parts: list[str] = []
+    for name in names:
+        entry = lock.characters.get(name)
+        if entry is None:
+            parts.append(f"{name}|<未登记>")
+            continue
+        refs = "、".join(entries([Path(r) for r in entry.refs]))
+        notes = "、".join(entry.negative_notes or [])
+        parts.append(f"{name}|{entry.state}|{entry.anchor.strip()}|{refs}|{notes}")
+    return signature(*sorted(parts)), len(parts)
+
 def parse_card(text: str) -> dict[str, CastEntry]:
     """从定妆卡 Markdown 抽出人物锚定描述。
 
