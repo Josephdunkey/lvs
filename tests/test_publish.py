@@ -403,3 +403,52 @@ def test_cn_number_reads_chinese_episode_numbers():
     assert publish._cn_number("二十三") == 23
     assert publish._cn_number("12") == 12
     assert publish._cn_number("廿") is None
+
+def _crossed_canvas(size: tuple[int, int], color: tuple[int, int, int] = (255, 255, 255)) -> Any:
+    """一张"不会触发平涂裁切"的白底图（横竖各一条黑线，逐列/逐行都不平涂）。"""
+    from PIL import Image, ImageDraw
+
+    w, h = size
+    im = Image.new("RGB", size, color)
+    d = ImageDraw.Draw(im)
+    d.line([(0, h // 2), (w, h // 2)], fill=(0, 0, 0), width=2)
+    d.line([(w // 2, 0), (w // 2, h)], fill=(0, 0, 0), width=2)
+    return im
+
+
+def test_cover_scrim_left_layout_keeps_top_and_bottom_bright(tmp_path: Path):
+    """★ 用户 2026-10-05 第三轮："主要不要挡画面"。
+
+    横版压暗自 2026-10-05 起只压**字块那条横带**（`_scrim(band=...)`）。
+    底图纯白时，画面左上/左下（字块之外）必须仍接近原色 ——
+    旧版是"整条左列从顶黑到底"，这两个角会被压掉 60+ 个色阶。
+    """
+    from PIL import Image
+
+    base = tmp_path / "white.png"
+    _crossed_canvas(publish.BILIBILI_SIZE).save(base)
+    out = publish.render_cover(base, ["他七年没回家", "那晚睡的床底下是什么"],
+                               publish.BILIBILI_SIZE, tmp_path / "c.png")
+    with Image.open(out) as im:
+        px = im.convert("RGB").load()
+    w, h = publish.BILIBILI_SIZE
+    corners = {"左上": px[int(w * 0.02), int(h * 0.02)],
+               "左下": px[int(w * 0.02), int(h * 0.98)]}
+    bad = {k: v for k, v in corners.items() if min(v) < 240}
+    assert not bad, f"字块之外的画面被压暗了：{bad}（要求每个通道 ≥ 240）"
+
+
+def test_cover_scrim_top_layout_keeps_lower_half_bright(tmp_path: Path):
+    """竖版压暗的射程必须收在字块附近 —— 下半屏整个留给画面。"""
+    from PIL import Image
+
+    base = tmp_path / "white.png"
+    _crossed_canvas(publish.DOUYIN_SIZE).save(base)
+    out = publish.render_cover(base, ["他七年没回家", "那晚睡的床底下是什么"],
+                               publish.DOUYIN_SIZE, tmp_path / "c.png", layout="top")
+    with Image.open(out) as im:
+        px = im.convert("RGB").load()
+    w, h = publish.DOUYIN_SIZE
+    for frac in (0.60, 0.80, 0.95):
+        v = px[int(w * 0.25), int(h * frac)]   # 避开中轴线
+        assert min(v) >= 240, f"竖版 {frac:.0%} 高处被压暗了：{v}（要求每个通道 ≥ 240）"

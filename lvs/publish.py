@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from lvs import graphic
+from lvs import media
 from lvs.config import Config, lib_dir
 from lvs.errors import UsageError
 from lvs.ffmpeg import duration as ff_duration
@@ -396,9 +397,38 @@ def _fit_to_size(img: Any, size: tuple[int, int]) -> Any:
     return img.resize((w, h), Image.LANCZOS)
 
 
+def _band_mask(size: tuple[int, int], top: int, bottom: int, soft: int) -> Any:
+    """纵向软边遮罩：`top..bottom` 之间全量，向两侧各羽化 `soft` 像素。
+
+    ★ 2026-10-05 用户："主要不要挡画面"。横版以前的压暗是**整条左列从顶黑到底**，
+      画面上下两头全被吃掉；现在只压"字块所在的那条横带"，两头恢复原亮度。
+    """
+    from PIL import Image
+
+    w, h = size
+    soft = max(1, soft)
+    col: list[int] = []
+    for y in range(h):
+        if y < top:
+            v = max(0.0, 1.0 - (top - y) / soft)
+        elif y > bottom:
+            v = max(0.0, 1.0 - (y - bottom) / soft)
+        else:
+            v = 1.0
+        col.append(int(255 * v))
+    strip = Image.new("L", (1, h))
+    strip.putdata(col)
+    return strip.resize((w, h), Image.BILINEAR)
+
+
 def _scrim(size: tuple[int, int], orientation: str, strength: float = 0.82,
-           reach: float = 0.72) -> Any:
-    """压暗层：横版压左侧、竖版压上部 —— 都是为了让白字有足够对比。"""
+           reach: float = 0.72, band: tuple[int, int] | None = None,
+           soft: int = 0) -> Any:
+    """压暗层：横版压左侧、竖版压上部 —— 都是为了让字有足够对比。
+
+    `band=(top, bottom)` 时再叠一层纵向软边遮罩（只有这条横带被压暗），
+    `soft` 为羽化像素数；横版默认走 band。
+    """
     from PIL import Image
 
     w, h = size
@@ -408,6 +438,9 @@ def _scrim(size: tuple[int, int], orientation: str, strength: float = 0.82,
             int(255 * strength * max(0.0, 1.0 - (x / max(1, w - 1)) / reach)) for x in range(w)
         ])
         alpha = strip.resize((w, h), Image.BILINEAR)
+        if band is not None:
+            alpha = Image.composite(alpha, Image.new("L", (w, h), 0),
+                                    _band_mask(size, band[0], band[1], soft))
     else:
         strip = Image.new("L", (1, h))
         strip.putdata([
@@ -455,9 +488,18 @@ def _wrap_balanced(draw: Any, line: str, font: Any, max_w: float) -> list[str]: 
     return rows
 
 
-#: 封面字默认配色：**深墨字 + 奶白描边**（本项目的房规 —— 001 白峰 / 002 菊花之约
-#: 两张定版都是这个方向）。反过来（浅字 + 深描边）在浅色或花样底图上会化掉：
-#: 2026-10-05 那批 `*_final` 就是反着来 + 字太小，被用户打回（判据在 tests/test_publish.py）。
+#: 封面字"呼吸系数"：折行撑满算出来的最大字号再乘这个数。
+#: 1.00 = 顶满字框（第一版，用户："有点太大"）→ 0.85 → 0.80
+#: → **0.76**（用户 2026-10-05 第三轮："再小半个字号，主要不要挡画面"）。
+#: 0.76 是**能守住下面这条红线的最小档**（实测 douyin 基准句 8.33% > 8%）：
+#: ★ 改这个数前先看 tests/test_publish.py::test_cover_text_is_big_enough
+#:   （单行字高必须 ≥ 屏高 8% —— 当年那批只有 2.8%，等于没字）。
+_COVER_FILL = 0.76
+
+#: 压暗强度（0..1）。用户第三轮要"不要挡画面"：0.78 → 0.70 → **0.62**。
+#: 深墨字 + 奶白描边本身就吃得开，压暗只负责"托住字"，不该把画面蒙成灰玻璃。
+_COVER_SCRIM = 0.62
+
 _COVER_INK = (18, 24, 44)
 _COVER_PAPER = (250, 248, 240)
 
@@ -561,7 +603,8 @@ def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out
     ★ 2026-10-05 重做（用户反馈"那几张图不好看 / 封面的字也不够大"）：
       ① 字号口径从"不许折行、放不下就缩"改成"**折行撑满**" —— 旧口径为了让三行
          保持三行，10 字以上的长句必被压到 4% 屏高（1536 宽实测字号 ≈ 60 px）；
-         现在按折行后的总高反解**最大**字号（同一个盒子能到 ≈ 200 px）；
+         现在按折行后的总高反解**最大**字号（同一个盒子能到 ≈ 200 px），
+        再乘 `_COVER_FILL` 留一圈呼吸；
       ② 底图先过 `_trim_flat_bands`：画面必须铺满（见那里的实测数字）；
       ③ 配色改为深墨字 + 奶白描边（见 `_COVER_INK`）。
     """
@@ -583,40 +626,70 @@ def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out
     else:
         canvas = _gradient(size)
 
-    layer, alpha = _scrim(size, "left" if layout == "left" else "top",
-                          strength=0.78, reach=0.85 if layout == "left" else 0.60)
-    canvas = Image.composite(layer, canvas, alpha)
+    # 压暗层挪到"字块算完"之后再合成 —— 只有知道字块在哪，才能只压那一条横带。
     draw = ImageDraw.Draw(canvas)
 
+    # ★ 字块**占地**（2026-10-05 用户第二轮反馈："再小半个字号，主要不要挡画面"）：
+    #   竖版把字收进上半屏（底 0.74 → 0.62）—— 下半屏整个留给画面；
+    #   横版不再横贯整幅（右 0.95 → 0.80）—— 右侧至少留出 20% 让主体露脸。
+    #   配合 `_COVER_FILL` 降半号，同一句话占的像素面积降了约 1/3。
     if layout == "left":
-        box = (int(w * 0.055), int(h * 0.08), int(w * 0.95), int(h * 0.92))
+        box = (int(w * 0.055), int(h * 0.08), int(w * 0.80), int(h * 0.90))
         align_center = False
     else:
-        box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.74))
+        box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.62))
         align_center = True
     max_w = box[2] - box[0]
     max_h = box[3] - box[1]
 
     # ★ 折行撑满：从大到小试字号，第一个"折行后总高放得下"的就是它。
     #   行数变了（三行可能折成六行）是**要的**效果 —— 封面靠字大，不靠字少。
+    def _layout(size: int) -> tuple[Any, list[str]]:
+        """按字号折行 + 避头尾，返回 (font, rows)。"""
+        f = _cover_font(size, font_path)
+        wrapped: list[str] = []
+        for line in lines:
+            wrapped.extend(_wrap_balanced(draw, line, f, max_w))
+        return f, _fix_orphan_punct(wrapped)
+
     cap = int(h * (0.20 if layout == "left" else 0.155))
     min_size = max(28, int(h * 0.05))
     size_px = cap
-    font = _cover_font(size_px, font_path)
-    rows = list(lines)
     while size_px > min_size:
-        font = _cover_font(size_px, font_path)
-        rows = []
-        for line in lines:
-            rows.extend(_wrap_balanced(draw, line, font, max_w))
-        rows = _fix_orphan_punct(rows)
+        font, rows = _layout(size_px)
         if len(rows) * int(size_px * 1.26) <= max_h:
             break
         size_px -= 4
+    else:                                       # 到下限还放不下：就用下限，宁可挤
+        font, rows = _layout(min_size)
+        size_px = min_size
+
+    # ★ 呼吸系数：撑满是"别把字做小"，但顶到框边就太满了 ——
+    #   用户 2026-10-05 看完成品说"那个字又有点太大了，稍微小点"。
+    #   缩一号再重折一次（字号变小只会让行数不增，所以必定还是放得下）。
+    size_px = max(min_size, int(size_px * _COVER_FILL))
+    font, rows = _layout(size_px)
 
     line_h = int(font.size * 1.26)
     block_h = line_h * len(rows)
     top = box[1] + max(0, (max_h - block_h) // 2)
+
+    # ★ 压暗只围字块走（2026-10-05 第三轮："主要不要挡画面"）：
+    #   横版不再是整条左列从顶黑到底，只压字块那条横带（上下各留半行做羽化），
+    #   射程也从 0.72 收到 0.62；竖版射程贴着字块末行收，不再一律吃满 0.52 屏高。
+    #   强度 0.70 → `_COVER_SCRIM`(0.62)：画面明显更亮，字靠描边照样立得住。
+    pad = line_h // 2
+    if layout == "left":
+        reach: float = 0.62
+        band: tuple[int, int] | None = (max(0, top - pad), min(h, top + block_h + pad))
+    else:
+        reach = max(0.26, min(0.52, (top + block_h + pad) / h))
+        band = None
+    layer, alpha = _scrim(size, "left" if layout == "left" else "top",
+                          strength=_COVER_SCRIM, reach=reach, band=band,
+                          soft=max(8, int(h * 0.05)))
+    canvas = Image.composite(layer, canvas, alpha)
+    draw = ImageDraw.Draw(canvas)
     # 描边 0.07 字高：0.11 时**描边把字骨吃掉了**（实测渲染成了空心描边字，
     # 不像 001/002 的粗黑字）。粗黑体 + 细一圈奶白边才是房规。
     stroke = max(3, int(font.size * 0.07))
@@ -643,6 +716,12 @@ def _font_path(explicit: str | None) -> str | None:
 # ---- 底图挑选 ---------------------------------------------------------------
 
 
+# 封面底图的图片白名单 —— 真源 `lvs.media`（缺陷 B02/Q02）。这里不再写第二份字面量：
+# 原先 `pick_base` 自己 `glob("*.png") + glob("*.jpg")`，漏了 jpeg/webp/tif ——
+# 一目录的 .webp 会被报成"目录里没有图片"。回归断言见 `tests/test_media.py`。
+IMAGE_EXTS = media.IMAGE_EXTS
+
+
 def pick_base(ws: Workspace, config: Config, explicit: str | None = None) -> tuple[Path | None, str]:
     """封面底图：`--base` > 配置 `publish.base_image` > 任务里已有的画面。
 
@@ -657,7 +736,7 @@ def pick_base(ws: Workspace, config: Config, explicit: str | None = None) -> tup
         candidates.append(Path(configured).expanduser())
     for p in candidates:
         if p.is_dir():
-            found = sorted(x for x in p.glob("*.png")) + sorted(x for x in p.glob("*.jpg"))
+            found = media.glob_images(p)
             if found:
                 return found[-1], f"目录里最新的一张：{found[-1]}"
             return None, f"目录里没有图片：{p}"
@@ -669,7 +748,7 @@ def pick_base(ws: Workspace, config: Config, explicit: str | None = None) -> tup
         d = ws.path("assets", branch)
         if not d.is_dir():
             continue
-        found = sorted(x for x in d.glob("shot-*.png") if x.is_file())
+        found = [x for x in media.glob_images(d) if x.name.startswith("shot-")]
         if found:
             return found[-1], f"自动挑：assets/{branch}/{found[-1].name}"
     return None, "任务里没有可用画面 → 用纯色渐变底（封面字照叠）"
