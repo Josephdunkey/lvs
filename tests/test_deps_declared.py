@@ -101,7 +101,7 @@ class DeclaredDependenciesTest(unittest.TestCase):
         """extras 名字是"装哪组能干什么"的对外承诺，删掉任何一个都是破坏契约。"""
         with open(PYPROJECT, "rb") as fh:
             extras = tomllib.load(fh)["project"]["optional-dependencies"]
-        for name in ("tts", "http", "align", "image", "comfy", "gui", "qc", "all", "dev"):
+        for name in ("tts", "http", "align", "image", "comfy", "gui", "qc", "bgm", "all", "dev"):
             self.assertIn(name, extras, f"extras `{name}` 没了（界面/图文卡/发布靠它）")
         for need in ("pillow", "flask", "tomlkit", "numpy"):
             self.assertIn(need, {_dist_name(s) for s in extras["all"]},

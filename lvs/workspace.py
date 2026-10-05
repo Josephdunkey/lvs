@@ -82,10 +82,155 @@ def write_shots_json(path: Path, data: dict[str, Any]) -> None:
 
     `Workspace.write_shots` 与界面（它拿到的是任务目录而非 Workspace）都走这里，
     免得同一个文件有第二种格式 —— 它同时是给人手改、给界面读的真相源（D14）。
+
+    ★ P1 起**同步写侧车索引** `shots.index.json`（每镜一行的小表）：0.5 MB 的
+      `shots.json` 一进上下文就常驻重发，agent 该先读小表再决定看哪几镜。
+      索引是增强：写不出来只当没有，绝不连累主产物。
     """
     artifact.atomic_write_text(
         path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
+    try:
+        write_shots_index(path, data)
+    except Exception:  # noqa: BLE001 - 索引失败不该让写 shots.json 失败
+        pass
+
+
+# ---- 侧车索引（P1 / T1）-----------------------------------------------------
+#
+# 判据（`tests/test_architecture.py`）：**任何 > 64 KB 的产物都必须配
+# `<名字>.index.json`**。当前只有 `shots.json` 过线，所以只有它写侧车。
+
+#: 多大的产物必须配侧车 —— 与判据里那条硬阈值是**同一个常量**。
+INDEX_MIN_SOURCE_BYTES = 64 * 1024
+
+#: 「大产物 → 侧车」登记表。**新增一个就必须同时加判据**（见
+#: `tests/test_architecture.py::test_large_artifacts_have_sidecar_index`）。
+#: 现在只有 `shots.json` 过 64 KB 线。
+INDEX_SIDECARS: dict[str, str] = {"shots.json": "shots.index.json"}
+
+#: 侧车体积目标 = 源文件的 2%（提案 §4.8 T1）。为什么还要一个下限：500 KB 的表里
+#: 每镜只摊到 ~29 字节 —— 连一个中文字都放不下。所以 2% 是**目标**，32 KB 是下限，
+#: 保证侧车仍然说得清"这一镜是什么"；超预算时**先缩『一句话』**，最后才丢人物。
+INDEX_BUDGET_RATIO = 0.02
+INDEX_MIN_BUDGET_BYTES = 32 * 1024
+
+#: 每镜"一句话"最多多少字（预算不够时 24→12→6→3→0 逐级缩短）。
+INDEX_SUMMARY_CHARS = 24
+
+#: 每镜最多记几个人物槽位。
+INDEX_CHARS_MAX = 6
+
+#: 人物槽位 `{NAME}` —— 与 `cast.SLOT` 同一写法（那边 import 本模块，这里不能反向
+#: import 它，否则成环；`tests/test_shots_index.py` 用同一批样本守住两边一致）。
+_SLOT = re.compile(r"\{([^{}\s]{1,40})\}")
+
+
+def shots_index_name(source_name: str) -> str:
+    """`shots.json` → `shots.index.json`（与源产物同目录同主干）。"""
+    return Path(source_name).with_suffix(".index.json").name
+
+
+def _slots_of(shot: dict[str, Any]) -> list[str]:
+    """这一镜用到的人物槽位（从 visual/prompt/scene 三处取并集，与 cast 同口径）。"""
+    blob = f"{shot.get('visual') or ''} {shot.get('prompt') or ''} {shot.get('scene') or ''}"
+    seen: list[str] = []
+    for name in _SLOT.findall(blob):
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _summary_of(shot: dict[str, Any], limit: int) -> str:
+    text = " ".join(str(shot.get("scene") or shot.get("visual") or "").split())
+    if limit <= 0:
+        return ""
+    return text[:limit]
+
+
+def _seconds_of(shot: dict[str, Any]) -> float:
+    dur = shot.get("audio_duration")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+        return round(float(dur), 1)
+    start, end = shot.get("start"), shot.get("end")
+    if (isinstance(start, (int, float)) and isinstance(end, (int, float))
+            and not isinstance(start, bool) and not isinstance(end, bool) and end >= start):
+        return round(float(end) - float(start), 1)
+    return 0.0
+
+
+def _is_graphic(shot: dict[str, Any]) -> bool:
+    """是否**图文 beat**（图表/信息图，不走生图）。"""
+    return (str(shot.get("kind") or "").lower() == "graphic"
+            or str(shot.get("source") or "").lower() == "graphic")
+
+
+def _index_entry(shot: dict[str, Any], summary_chars: int, *, keep_chars: bool = True) -> dict[str, Any]:
+    entry: dict[str, Any] = {"i": int(shot.get("id") or 0)}
+    if keep_chars:
+        entry["c"] = _slots_of(shot)[:INDEX_CHARS_MAX]
+    text = _summary_of(shot, summary_chars)
+    if text:
+        entry["s"] = text
+    entry["d"] = _seconds_of(shot)
+    entry["g"] = _is_graphic(shot)
+    return entry
+
+
+def _index_text(index: dict[str, Any]) -> str:
+    return json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+
+
+def build_shots_index(
+    data: dict[str, Any],
+    *,
+    source_bytes: int = 0,
+    summary_chars: int | None = None,
+    budget_ratio: float = INDEX_BUDGET_RATIO,
+) -> dict[str, Any]:
+    """每镜一小条的索引：`id / 人物 / 一句话 / 时长 / 是否图文 beat`。
+
+    体积按预算收敛（见 `INDEX_BUDGET_RATIO` / `INDEX_MIN_BUDGET_BYTES`）：超预算时
+    先把『一句话』按 24→12→6→3→0 缩短，仍超就丢掉『人物』，保证 ≤ 预算。
+    """
+    shots = [s for s in (data.get("shots") or []) if isinstance(s, dict)]
+    top = summary_chars if summary_chars is not None else INDEX_SUMMARY_CHARS
+    budget = max(int(source_bytes * budget_ratio), INDEX_MIN_BUDGET_BYTES)
+
+    def payload(chars: int, keep_chars: bool) -> dict[str, Any]:
+        return {
+            "v": 1,
+            "task": str(data.get("task") or ""),
+            "count": len(shots),
+            "summary_chars": chars,
+            "shots": [_index_entry(s, chars, keep_chars=keep_chars) for s in shots],
+        }
+
+    index = payload(top, True)
+    for chars in (top, 12, 6, 3):
+        if chars > top:
+            continue
+        index = payload(chars, True)
+        if len(_index_text(index).encode("utf-8")) <= budget:
+            break
+    else:
+        index = payload(0, False)     # 最后手段：一句话与人物都放不下
+    return index
+
+
+def write_shots_index(
+    shots_path: Path, data: dict[str, Any], *, source_bytes: int | None = None
+) -> Path | None:
+    """把侧车索引写到 `shots.json` 旁边。产物 ≤ 64 KB / 写失败时返回 None。
+
+    小文件（排演稿、3 镜 demo）不配侧车 —— 读它不比读原文便宜，还得同步两份。
+    """
+    size = int(source_bytes) if source_bytes is not None else shots_path.stat().st_size
+    if size <= INDEX_MIN_SOURCE_BYTES:
+        return None
+    target = shots_path.with_name(shots_index_name(shots_path.name))
+    artifact.atomic_write_text(target, _index_text(build_shots_index(data, source_bytes=size)) + "\n")
+    return target
 
 
 @dataclass

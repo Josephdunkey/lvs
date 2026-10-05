@@ -22,6 +22,7 @@ import re
 from typing import Any
 
 from lvs import llm as llm_mod
+from lvs import llm_provider
 from lvs import prompting, sources
 from lvs.config import Config
 from lvs.progress import track
@@ -970,7 +971,10 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
     segment_beats = _segment_beats(parse_data)
     use_llm = not getattr(args, "no_llm", False) and llm_mod.available(config)
     if use_llm:
-        client = llm_mod.LLMClient.from_config(config)
+        # P2 路由：拆镜（beat 归位 / 逐镜提示词）是**敏感环节**，固定走远程
+        client = llm_mod.LLMClient.from_config(config, site=llm_provider.SITE_SHOTS_BEATS)
+        # P1：接上 LLM 缓存 + 成本记账（`--no-cache` / LVS_LLM_CACHE=0 可关）
+        llm_mod.configure(ws=ws, stage="shots", config=config)
         print(f"用 LLM 做 beat 归位 / 分类 / 场景翻译 / 提示词（模型 {client.model}，画面模式 {visual_mode}）…")
         try:
             _llm_enrich(client, shots, ws, segment_beats, mode=visual_mode, style=style)

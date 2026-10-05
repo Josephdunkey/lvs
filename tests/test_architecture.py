@@ -270,6 +270,8 @@ def test_exit_code_for_is_total():
 _HASH_ALLOWLIST: dict[str, str] = {
     "artifact.py": "签名与指纹的**唯一**实现处",
     "assets.py": "`_file_digest` 是**内容哈希**（真读字节），比指纹严格 —— 缓存命中要求字节一致",
+    "llm_cache.py": "LLM 内容寻址缓存的键（sha256(模型+地址+消息+参数)）：要的是**请求内容**的指纹，"
+                    "与 `artifact` 的「文件变没变」（size+mtime）不是一回事，也不该共用",
 }
 
 
@@ -427,7 +429,8 @@ def test_every_work_command_supports_json():
         if getattr(action, "choices", None) and isinstance(action.choices, dict):
             subs.update(action.choices)
 
-    want = {"parse", "shots", "assets", "voice", "build", "run", "publish", "qc", "gate", "styles"}
+    want = {"parse", "shots", "assets", "voice", "build", "run", "publish", "qc", "gate", "styles",
+            "resume", "cost"}
     missing_cmd: list[str] = []
     missing_flag: list[str] = []
     for name in sorted(want):
@@ -445,6 +448,56 @@ def test_every_work_command_supports_json():
         f"这些工作命令没有 `--json`：{missing_flag}\n"
         f"  结果契约要求工作命令都能产出统一信封（见 `lvs/result.py`）。"
     )
+
+
+# ---- 约束 6：大产物必须配侧车索引（P1 / T1）--------------------------------
+
+
+def test_large_artifacts_have_sidecar_index():
+    """★ 任何 > 64 KB 的产物都必须配 `<名字>.index.json`。
+
+    为什么是架构判据：`shots.json` 半兆字节，agent 一读就常驻重发（老病根）。
+    "先读小表"这件事靠纪律会退化，靠判据不会。扫描对象是**真实任务目录**
+    （`.work/*/`）；干净 clone（没有 `.work/`）时跳过。
+    """
+    import importlib
+
+    workspace_mod = importlib.import_module("lvs.workspace")
+    work = LVSDIR.parent / ".work"
+    if not work.is_dir():
+        pytest.skip("没有 .work/（干净 clone），跳过真实产物扫描")
+
+    offenders: list[str] = []
+    for task_dir in sorted(p for p in work.glob("*") if p.is_dir()):
+        for source_name, index_name in workspace_mod.INDEX_SIDECARS.items():
+            source = task_dir / source_name
+            if not source.is_file():
+                continue
+            if source.stat().st_size <= workspace_mod.INDEX_MIN_SOURCE_BYTES:
+                continue
+            if not (task_dir / index_name).is_file():
+                offenders.append(source.relative_to(work).as_posix())
+    assert offenders == [], (
+        f"这些大产物没有侧车索引：{offenders}\n"
+        "  修复：重跑 `lvs shots --task <任务>`（会同步写索引），"
+        "或跑 `.work/tools/backfill_shots_index.py`。"
+    )
+
+
+def test_sidecar_registry_names_are_consistent():
+    """登记表的命名规则与 `shots_index_name` 必须一致（否则判据查错了文件）。"""
+    import importlib
+
+    workspace_mod = importlib.import_module("lvs.workspace")
+    for source_name, index_name in workspace_mod.INDEX_SIDECARS.items():
+        assert workspace_mod.shots_index_name(source_name) == index_name
+
+
+def test_sidecar_threshold_is_the_documented_64kb():
+    import importlib
+
+    workspace_mod = importlib.import_module("lvs.workspace")
+    assert workspace_mod.INDEX_MIN_SOURCE_BYTES == 64 * 1024
 
 
 #: 契约模块必须自己也是叶子 —— 产出方（shots）与消费方（tts/assets/build）都要引它，

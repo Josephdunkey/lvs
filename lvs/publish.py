@@ -668,11 +668,13 @@ _POLISH_PROMPT = (
 def polish_with_llm(meta: dict[str, Any], config: Config) -> tuple[dict[str, Any], str]:
     """可选润色。返回 (新 meta, 说明)；任何失败都**原样退回**已算好的物料。"""
     from lvs import llm as llm_mod
+    from lvs import llm_provider
 
-    if not llm_mod.available(config):
+    # P2 路由：投稿标题/简介/标签属低风险（人还会再改一遍）→ 默认走本地 ollama
+    if not llm_mod.available(config, site=llm_provider.SITE_PUBLISH_META):
         return meta, "未配置 LLM key，跳过润色"
     try:
-        client = llm_mod.LLMClient.from_config(config)
+        client = llm_mod.LLMClient.from_config(config, site=llm_provider.SITE_PUBLISH_META)
         payload = {
             "书名": meta["book"]["title"],
             "封面字": meta["cover"]["lines"],
@@ -715,6 +717,10 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
     try:
         meta = build_meta(ws, config, lines_arg=lines_arg, base_arg=base_arg)
         if use_llm:
+            # P1：投稿文案的 LLM 润色同样进缓存/记账（重跑同一份物料不再花钱）
+            from lvs import llm as llm_mod
+
+            llm_mod.configure(ws=ws, stage="publish", config=config)
             meta, note = polish_with_llm(meta, config)
             print(f"  {note}")
         products = render_all(ws, config, meta, base_arg=base_arg)

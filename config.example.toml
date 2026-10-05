@@ -246,6 +246,49 @@ max_consecutive_failures = 8
 # 纯追加快盘文件，不上框架、不起服务。关掉不影响任何行为。
 run_log = true
 
+[budget]
+# ---- LLM 成本闸门（P1）----
+# 每次 LLM 调用按响应里的 `usage` 估算费用，落 logs/run-*.jsonl；`lvs cost` 汇总。
+# 三档：observe（默认，只记不拦）/ warn（超了打印告警）/ cap（超了**抛错硬拦**）。
+# 缺省保守（observe）—— 先看几轮真实数字，确认可信了再上 cap。
+mode = "observe"
+cap_usd = 0.0            # 总预算（USD）；0 = 不限
+per_action_usd = 0.0     # 单次调用阈值（USD）；0 = 不限
+# 价格默认走内置表（deepseek-chat / gpt-4o-mini / gpt-4o / …）；要精确对账就覆盖：
+# price_in_per_1m = 0.27
+# price_out_per_1m = 1.10
+
+[providers]
+# ---- LLM provider 路由（P2）----
+# 低风险调用走**本地 ollama**（省 API token），敏感环节留远程。默认路由表：
+#   local : bgm.style（BGM 风格）/ publish.meta（标题/简介/标签）/ assets.tagging（素材打标）
+#   remote: shots.beats（beat 归位/分类）/ shots.prompts（逐镜提示词）
+#  其它 / 未登记的名字 = remote —— **保守默认**：没显式声明的一律不切。
+#
+# 总开关（一键回滚）：
+#   auto（默认）= 按上面的路由表
+#   remote       = **全部远程**，回到 P2 之前的现状
+#   local        = **全部本地**（连拆镜也走 ollama；质量会掉，离线 / 无 key 时用）
+# 环境变量 `LVS_LLM_PROVIDER` 优先于这里。
+mode = "auto"
+
+[providers.local]
+# 本地腿：ollama 的 OpenAI 兼容端点（`ollama serve` 默认 11434）。
+base_url = "http://localhost:11434/v1"
+model = "qwen2.5:7b-instruct-q4_K_M"   # 中文强、JSON 稳的 7B q4（约 4.4 GB）
+# ★ 本地 ollama 必须跑 CPU（8 GB 单卡还要留给 ComfyUI / TTS）：
+#   OLLAMA_LLM_LIBRARY=cpu + OLLAMA_VULKAN=0 → 重启 `ollama serve` → `ollama ps` 看 PROCESSOR=100% CPU
+# api_key = ""                         # ollama 不校验；留空 = 用占位值 "ollama"
+
+[providers.remote]
+# 远程腿：**三项留空 = 沿用上面 [app] 段**（密钥不搬家，仍是 openai_api_key）。
+base_url = ""
+model = ""
+# api_key = ""
+
+# [providers.routes]          # 单点覆盖（可选；键名带点号，必须加引号）
+# "bgm.style" = "remote"      # 例：不想让本地模型碰配乐 → BGM 也走远程
+
 [publish]
 # ---- 投稿物料（`lvs publish`）----
 # 成片出来 ≠ 能投稿：B站/抖音要的是**另一套东西**（带字封面、标题、简介、标签）。

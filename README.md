@@ -559,6 +559,42 @@ CLI 同名开关可临时覆盖：`--volume-db` / `--duck-threshold` / `--duck-r
 
 ---
 
+### LLM provider 路由（省钱：低风险调用走本地 ollama）
+
+拆镜的每条 LLM 调用都在花钱，但真正需要大模型的只有两类：**beat 归位 / 分类**与
+**逐镜提示词**（错了整片画面跑偏）。其余（BGM 风格、投稿标题/简介/标签、素材打标）
+都是"结构化搬运"，且都带规则兜底 → 默认交给**本地 ollama**（`qwen2.5:7b-instruct-q4_K_M`）。
+
+```toml
+[providers]
+mode = "auto"                 # auto（默认，按路由表）/ remote（全部远程，一键回滚）/ local（全部本地）
+                              # 环境变量 LVS_LLM_PROVIDER 优先于这里
+[providers.local]
+base_url = "http://localhost:11434/v1"
+model = "qwen2.5:7b-instruct-q4_K_M"
+
+[providers.remote]            # 留空 = 沿用 [app] 段（密钥不搬家）
+base_url = ""
+model = ""
+```
+
+| 接入点 | 默认 | 说明 |
+|---|---|---|
+| `bgm.style` | **local** | `lvs bgm` 的风格提示词（7 条规则兜底） |
+| `publish.meta` | **local** | `lvs publish --llm` 的标题/简介/标签 |
+| `assets.tagging` | **local** | 素材筛选/打标（预留；当前没有真实调用点） |
+| `shots.beats` / `shots.prompts` | remote | 拆镜，**不动**（质量敏感） |
+| 其它 / 未登记 | remote | 保守默认：没声明的一律不切 |
+
+- "LLM 配没配"仍由 `[app].openai_api_key` 决定：没 key = 没配 LLM（一切照旧走规则）；
+  只有 `mode = "local"` 才允许无 key 直接用 ollama（离线跑法）。
+- 本地调用**费用记 0**：`lvs cost` 另起一行显示"本地 N 次（省估算 $X）/ 远程 M 次"。
+- ★ **本地 ollama 必须跑 CPU**（8 GB 单卡被 ComfyUI(:8188) / Qwen3-TTS(:8100) 串行占用）：
+  设 `OLLAMA_LLM_LIBRARY=cpu` + `OLLAMA_VULKAN=0` 后重启 `ollama serve`，用 `ollama ps`
+  确认 `PROCESSOR` 是 `100% CPU`（实测一句 JSON 约 16 s；GPU 占用 0）。
+- 缓存键含 base_url：本地与远程各存一份，不会互相串味。单点覆盖写 `[providers.routes]`
+  （键名带点号要加引号），例如 `"bgm.style" = "remote"`。
+
 ## 画面质量（拆 beat / 图文卡片 / 抗抖）
 
 拍过真实成片后按三个症状定点修的，都**没加新依赖**：

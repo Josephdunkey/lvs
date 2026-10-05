@@ -354,9 +354,10 @@ def build_prompt(
     if not use_llm:
         return plan
 
-    from lvs import llm  # 局部导入：没有 requests 的环境也要能 import 本模块
+    from lvs import llm, llm_provider  # 局部导入：没有 requests 的环境也要能 import 本模块
 
-    if not llm.available(config):
+    # P2 路由：BGM 风格提示词属低风险（下面有 7 条规则兜底）→ 默认走本地 ollama
+    if not llm.available(config, site=llm_provider.SITE_BGM_STYLE):
         return plan
     messages = [
         {"role": "system", "content": LLM_SYSTEM_PROMPT},
@@ -369,7 +370,7 @@ def build_prompt(
         },
     ]
     try:
-        client = llm.LLMClient.from_config(config)
+        client = llm.LLMClient.from_config(config, site=llm_provider.SITE_BGM_STYLE)
         data = llm.chat_json(client, messages, retries=0, temperature=0.4)
         style = _style_from_llm(data, rules.rule)
     except Exception as exc:  # noqa: BLE001 - LLM 任何失败都必须退回规则，不许炸穿

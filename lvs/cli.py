@@ -74,6 +74,11 @@ def _common_options() -> argparse.ArgumentParser:
         "--config", metavar="PATH",
         help="配置文件路径（默认按顺序找：--config → $LVS_CONFIG → ./config.toml → 仓库根 config.toml）",
     )
+    # P1 逃生阀：本次不读不写 LLM 缓存（环境变量 LVS_LLM_CACHE=0 同效）。
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="本次不读不写 LLM 缓存（默认缓存；同 LVS_LLM_CACHE=0）",
+    )
     return parser
 
 
@@ -338,6 +343,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix", default="UGE", help="只看某前缀的任务（默认 UGE）")
     p.add_argument("--json", action="store_true", help="机器可读输出（给 Agent 用）")
 
+    # 续跑一条命令（P1 / T2）：把"我在哪 + 下一步敲什么 + 最近失败了什么"合成一条。
+    p = sub.add_parser(
+        "resume", parents=[common],
+        help="续跑：门禁向量 / 下一道门 / 下一条命令 / 最近失败（--json ≤40 行）",
+    )
+    p.add_argument("--all", dest="show_all", action="store_true",
+                   help="列出全部任务（默认只看 UGE 前缀）")
+    p.add_argument("--json", action="store_true",
+                   help="机器可读输出（≤40 行，含 next_gate / next_command）")
+
+    # 成本（P1 / T5）：读 runlog 的 llm_cost 事件，按阶段拆分。
+    p = sub.add_parser(
+        "cost", parents=[common],
+        help="LLM 成本：token 与估算费用（按阶段拆分）；预算见 [budget]",
+    )
+    p.add_argument("--all", dest="show_all", action="store_true", help="列出全部任务")
+    p.add_argument("--json", action="store_true", help="机器可读输出")
+
     # 行号锚定读取（S4）：取代“转储成 *_numbered.txt 再分页读”。
     # 不接 parents=[common]：它不读配置、不碰任务目录，只看磁盘上的文件。
     p = sub.add_parser(
@@ -358,6 +381,46 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-i", "--ignore-case", action="store_true", help="忽略大小写")
     g.add_argument("--width", type=int, default=160, metavar="N", help="命中行截断宽度（默认 160）")
     msub.add_parser("ls", help="列出遗留的 *_numbered.txt（S4 要消灭的中间产物）")
+    # BGM（独立功能 P5）：本地生成**可商用**配乐（自适应文案风格）+ 压低/闪避混音。
+    # 为什么单开一个命令而不是塞进 build：生成要加载几 GB 的模型、跑几分钟，
+    # 与"合成"是两种节奏；而 mix 又要能对**已出的成片**反复试参数（原片不动）。
+    # 推理走 CPU（GPU 被 ComfyUI / Qwen3-TTS 串行占用），权重走 hf-mirror。
+    p = sub.add_parser(
+        "bgm", parents=[common],
+        help="BGM：本地生成可商用配乐（随文案风格）+ 压低闪避混音（CPU）",
+        description=(
+            "背景音乐（BGM）：按讲稿风格本地生成可商用配乐，再压低 + 闪避混进成片。\n"
+            "动作：generate（默认）/ download / prompt / mix\n"
+            "模型：stabilityai/stable-audio-3-small-music"
+            "（Stability AI Community License，年收入 <100 万美元可商用，输出归用户）"
+        ),
+    )
+    p.add_argument(
+        "action", nargs="?", default=None, metavar="<动作>",
+        help="generate（默认，生成）/ download（只下权重）/ "
+             "prompt（只打印提示词与风格，秒出）/ mix（混进成片）",
+    )
+    p.add_argument("--duration", type=float, metavar="SEC",
+                   help="生成时长秒数（默认 60，夹在 15–180；混音时循环铺满成片）")
+    p.add_argument("--seed", type=int, help="随机种子（默认 20261005，同种子可复现）")
+    p.add_argument("--steps", type=int, metavar="N",
+                   help="采样步数（默认 8 —— 模型卡给 SA3 的值；CPU 上步数≈耗时）")
+    p.add_argument("--cfg-scale", type=float, metavar="F",
+                   help="提示词贴合度（默认 1.0 —— 模型卡给 SA3 的值）")
+    p.add_argument("--prompt", metavar="TEXT", help="手动指定提示词（跳过风格推断）")
+    p.add_argument("--no-llm", action="store_true",
+                   help="不用 LLM，只用内置关键词规则推风格（没 key 时的默认行为）")
+    p.add_argument("--force", action="store_true", help="已有产物也重做 / 重新下载权重")
+    p.add_argument("--video", metavar="PATH",
+                   help="mix：要混的成片（默认 .work/<task>/final.mp4）")
+    p.add_argument("--out", metavar="PATH", help="mix：输出路径（默认 bgm_<原片名>）")
+    p.add_argument("--volume-db", type=float, metavar="DB",
+                   help="mix：BGM 基础音量 dB（默认 -16，负值=压低）")
+    p.add_argument("--duck-threshold", type=float, metavar="F",
+                   help="mix：闪避触发阈值（线性幅度，默认 0.03 ≈ -30 dBFS）")
+    p.add_argument("--duck-ratio", type=float, metavar="F", help="mix：闪避压缩比（默认 8）")
+    p.add_argument("--no-duck", action="store_true", help="mix：不开闪避（只压低）")
+    p.add_argument("--json", action="store_true", help="机器可读输出（生成元信息）")
 
     return parser
 
@@ -449,6 +512,10 @@ def _dispatch(args: argparse.Namespace, config: Config, ws: Workspace) -> int:
 
         return styles_mod.run_command(config, args)
 
+    if args.command == "bgm":
+        from lvs import bgm as bgm_mod
+
+        return bgm_mod.run_command(config, ws, args)
     issues = _STAGE_ISSUES.get(args.command, "?")
     print(f"未知命令 `{args.command}`（对应票据 {issues}）。")
     return 3
@@ -579,6 +646,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # P1 逃生阀：`--no-cache` 立刻关掉缓存（模块级上下文，早于任何 LLM 调用）。
+    if getattr(args, "no_cache", False):
+        from lvs import llm_cache
+
+        llm_cache.disable()
+
     if not args.command:
         parser.print_help()
         return 0
@@ -612,6 +685,19 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import summary as summary_mod
 
         return summary_mod.run_command(config_path, args)
+
+    # resume / cost（P1）：都**不需要配置文件** ——
+    # resume 按任务前缀自己找 config（找不到就按"G2 指纹不可信"处理）；
+    # cost 没有 [budget] 段就按默认 observe 展示。
+    if args.command == "resume":
+        from lvs import resume as resume_mod
+
+        return resume_mod.run_command(config_path, args)
+
+    if args.command == "cost":
+        from lvs import llm_cost
+
+        return llm_cost.run_command(config_path, args)
 
     # map：行号锚定读取（S4）。同样**不需要配置文件** ——
     # 它只是把磁盘上的某几行打出来，不碰任务目录、不写任何东西。
@@ -657,6 +743,13 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import shots as shots_mod
 
         return shots_mod.run_command(config, Workspace.read(_resolve_task(args)), args)
+
+    # `lvs bgm prompt` 只看会用什么提示词（读 shots.json）：同 `board` 一样**不该替当前目录建
+    # 任务目录**（票 23）。其余动作（generate / download / mix）要写产物，仍走下面的 `.ensure()`。
+    if args.command == "bgm" and getattr(args, "action", None) == "prompt":
+        from lvs import bgm as bgm_mod
+
+        return bgm_mod.run_command(config, Workspace.read(_resolve_task(args)), args)
 
     # board / cast / gate / styles：纯读取为主，不替当前目录建任务目录（票 23 验收项）
     if args.command in ("board", "cast", "gate", "styles"):
