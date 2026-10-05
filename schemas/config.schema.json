@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longvideostudio.local/schemas/config.schema.json",
+  "title": "config.toml —— 项目配置",
+  "description": "`lvs config check` 用它校验。★ 未知键**不算错**（本 schema 不开 additionalProperties:false）—— 工具从 properties 反推「已知键」，多出来的键只给**警告**：代码里有动态键（bgm.<key> / comfyui.<key> / [styles.<名字>]），一刀切会误报。[base] 段在 Config.load 阶段就被摘掉（它是继承指令，不是配置项），所以不在这里声明。",
+  "type": "object",
+  "required": ["paths", "shots"],
+  "properties": {
+    "app": {
+      "type": "object",
+      "properties": {
+        "llm_provider": { "type": "string" },
+        "openai_api_key": { "type": "string", "description": "留空 = 未配；也可用环境变量 LVS_OPENAI_API_KEY 注入（环境变量优先）" },
+        "openai_base_url": { "type": "string" },
+        "openai_model_name": { "type": "string" }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "required": ["lib"],
+      "properties": {
+        "lib": { "type": "string", "description": "本项目的素材库根；所有项目内路径都从它派生（多项目化的核心）" }
+      }
+    },
+    "pexels": {
+      "type": "object",
+      "properties": { "api_key": { "type": "string", "description": "留空 = 不翻 Pexels（source_mode=auto 时部分镜会失败）；也可用 LVS_PEXELS_API_KEY" } }
+    },
+    "tts": {
+      "type": "object",
+      "properties": {
+        "backend": { "type": "string", "description": "edge | openai_speech（本地 Qwen3-TTS）" },
+        "voice": { "type": "string" },
+        "base_url": { "type": "string" },
+        "rate": { "type": "string" },
+        "pitch": { "type": "string" },
+        "volume": { "type": "string" },
+        "boundary": { "type": "string" },
+        "mode": { "type": "string", "description": "clone | custom_voice（本地 TTS 的克隆模式，见 lvs/tts.py）" },
+        "language": { "type": "string" },
+        "instruct": { "type": "string" },
+        "ref_audio": { "type": "string" },
+        "ref_text": { "type": "string" },
+        "xvec_only": { "type": "boolean" }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "properties": {
+        "gap": { "type": "number", "minimum": 0 },
+        "subtitle_max_chars": { "type": "integer", "minimum": 1 },
+        "align": { "type": "string", "description": "auto | whisper | estimate —— 本地 TTS 不返回词边界，whisper 对齐慢，estimate 按字数估算" },
+        "whisper_size": { "type": "string" },
+        "whisper_device": { "type": "string" }
+      }
+    },
+    "shots": {
+      "type": "object",
+      "required": ["style", "visual_mode", "source_mode"],
+      "properties": {
+        "style": { "type": "string" },
+        "style_file": { "type": "string" },
+        "visual_mode": { "enum": ["graphic", "photo"] },
+        "source_mode": { "enum": ["auto", "pexels", "local", "library"] },
+        "image_granularity": { "enum": ["beat", "shot"], "description": "beat = 同一画面位共用一张图（省算力，观感更静）；shot = 每镜一张" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "kenburns": { "enum": ["zoom-in", "zoom-out", "pan-right", "pan-up", "none"] },
+        "zoom_amount": { "type": "number" },
+        "kenburns_supersample": { "type": "integer", "minimum": 1 },
+        "short_asset": { "enum": ["loop", "freeze"] },
+        "subtitle_style": { "type": "string" },
+        "sanity_min_mean_db": { "type": "number" },
+        "sanity_black_ratio_max": { "type": "number" }
+      }
+    },
+    "bgm": {
+      "type": "object",
+      "properties": {
+        "file": { "type": "string" },
+        "volume": { "type": "number" },
+        "volume_db": { "type": "number", "description": "混音时的 BGM 基础音量（负值 = 压低；默认 -16）" },
+        "fade_in": { "type": "number" },
+        "fade_out": { "type": "number" },
+        "duration": { "type": "number" },
+        "steps": { "type": "integer" },
+        "cfg_scale": { "type": "number" },
+        "seed": { "type": "integer" },
+        "sampler": { "type": "string" },
+        "style": { "type": "string" },
+        "prompt": { "type": "string" },
+        "no_llm": { "type": "boolean" },
+        "out": { "type": "string" },
+        "model_dir": { "type": "string" },
+        "model_id": { "type": "string" },
+        "ms_repo": { "type": "string" },
+        "ms_endpoint": { "type": "string" },
+        "hf_endpoint": { "type": "string" },
+        "duck": { "type": "boolean" },
+        "duck_threshold": { "type": "number" },
+        "duck_ratio": { "type": "number" },
+        "duck_attack": { "type": "number" },
+        "duck_release": { "type": "number" },
+        "duck_makeup": { "type": "number" },
+        "detection": { "type": "string" }
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "properties": {
+        "skip_check": { "type": "boolean" },
+        "need_imagegen_mb": { "type": "integer" },
+        "need_tts_mb": { "type": "integer" }
+      }
+    },
+    "library": {
+      "type": "object",
+      "properties": {
+        "dirs": { "type": "array" },
+        "recursive": { "type": "boolean" },
+        "min_score": { "type": "integer" },
+        "demo_query": { "type": "string" }
+      }
+    },
+    "comfyui": {
+      "type": "object",
+      "properties": {
+        "backend": { "type": "string" },
+        "base_url": { "type": "string" },
+        "workflow": { "type": "string" },
+        "model": { "type": "string" },
+        "clip": { "type": "string" },
+        "vae": { "type": "string" },
+        "models_dir": { "type": "string" },
+        "seed": { "type": "integer" },
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "steps": { "type": "integer" },
+        "cfg": { "type": "number" },
+        "batch": { "type": "integer" },
+        "sampler": { "type": "string" },
+        "scheduler": { "type": "string" },
+        "negative": { "type": "string" },
+        "negative_prompt": { "type": "string" }
+      }
+    },
+    "cast": {
+      "type": "object",
+      "properties": {
+        "dir": { "type": "string" },
+        "card": { "type": "string" },
+        "workflow": { "type": "string" },
+        "ref_workflow": { "type": "string" },
+        "ref_denoise": { "type": "number" },
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "seed": { "type": "integer" },
+        "framing": { "type": "string" },
+        "style_suffix": { "type": "string" }
+      }
+    },
+    "qc": {
+      "type": "object",
+      "properties": {
+        "block": { "type": "integer", "minimum": 1 },
+        "chroma_max": { "type": "number" },
+        "fix_chroma": { "type": "boolean" },
+        "face_model": { "type": "string" },
+        "enable_faces": { "type": "boolean" }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "properties": {
+        "enforce": { "type": "boolean" },
+        "ledger": { "type": "string" },
+        "max_consecutive_failures": { "type": "integer", "minimum": 0 },
+        "run_log": { "type": "boolean" }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["observe", "warn", "cap"], "description": "observe 只记 / warn 超了告警 / cap 超了抛错硬拦" },
+        "cap_usd": { "type": "number" },
+        "per_action_usd": { "type": "number" },
+        "price_in_per_1m": { "type": "number" },
+        "price_out_per_1m": { "type": "number" }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "description": "LLM 路由：低风险调用走本地 ollama，敏感环节留远程（见 lvs/llm_provider.py）",
+      "properties": {
+        "mode": { "enum": ["auto", "local", "remote"], "description": "auto 按路由表 / local 全本地 / remote 全远程（一键回滚）" },
+        "local": { "$ref": "#/$defs/leg" },
+        "remote": { "$ref": "#/$defs/leg" },
+        "routes": {
+          "type": "object",
+          "description": "单点覆盖：接入点名字（含点号，要加引号）→ local | remote",
+          "additionalProperties": { "enum": ["local", "remote"] }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "episode": { "type": "integer", "minimum": 1 },
+        "book_title": { "type": "string" },
+        "author": { "type": "string" },
+        "translator": { "type": "string" },
+        "publisher": { "type": "string" },
+        "series": { "type": "string" },
+        "category": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "intro": { "type": "string" },
+        "image_note": { "type": "string" },
+        "base_image": { "type": "string" },
+        "font": { "type": "string" },
+        "out_dir": { "type": "string" },
+        "series_note": { "type": "string" }
+      }
+    },
+    "styles": { "type": "object", "description": "装机级内联风格：[styles.<名字>] 表，代码按表读，键名由用户定" }
+  },
+  "$defs": {
+    "leg": {
+      "type": "object",
+      "properties": {
+        "base_url": { "type": "string" },
+        "model": { "type": "string" },
+        "api_key": { "type": "string" }
+      }
+    }
+  }
+}

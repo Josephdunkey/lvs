@@ -199,30 +199,39 @@ def _run_filter(path: Path, filter_args: list[str], timeout: int = 300) -> str:
     return (proc.stderr or "") + (proc.stdout or "")
 
 
-_RE_MEAN_VOLUME = re.compile(r"mean_volume:\s*(-?[\d.]+|-inf)\s*dB")
+_RE_VOLUME = re.compile(r"(mean|max)_volume:\s*(-?[\d.]+|-inf)\s*dB")
 
 
-def mean_volume_db(path: Path) -> float | None:
-    """整轨平均音量（dBFS）；读不到返回 None。
-
-    用 `volumedetect`：`mean_volume: -inf dB` 表示**整轨静音**（返回 `-inf` 对应的
-    一个很大的负数，让调用方按阈值判）。刻意返回 `float('-inf')` 而不是 None，
-    好让"确实是静音"与"没测出来"两种情形区分开。
-    """
-    p = Path(path)
-    if not p.is_file():
-        return None
-    text = _run_filter(p, ["-af", "volumedetect"])
-    m = _RE_MEAN_VOLUME.search(text)
-    if not m:
-        return None
-    raw = m.group(1)
+def _db_of(raw: str) -> float | None:
+    """`volumedetect` 的 dB 串 → float。`-inf` 是**结论**（整轨静音），不是"没测出来"。"""
     if raw == "-inf":
         return float("-inf")
     try:
         return float(raw)
     except ValueError:
         return None
+
+
+def volume_stats_db(path: Path) -> tuple[float | None, float | None]:
+    """整轨音量 `(平均, 峰值)`（dBFS）；读不到给 None。
+
+    用 `volumedetect`：`mean_volume: -inf dB` 表示**整轨静音**（返回 `float('-inf')`
+    而不是 None，好让"确实是静音"与"没测出来"两种情形区分开）。
+    峰值用来判**削波**：贴着 0 dBFS（≥ -0.1）说明某处已经削平了。
+
+    一次 `volumedetect` 就把两个数都读出来 —— 成片自检里这两条判据总是要一起看的。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None, None
+    text = _run_filter(p, ["-af", "volumedetect"])
+    found = {kind: _db_of(raw) for kind, raw in _RE_VOLUME.findall(text)}
+    return found.get("mean"), found.get("max")
+
+
+def mean_volume_db(path: Path) -> float | None:
+    """整轨平均音量（dBFS）；读不到返回 None（语义同 `volume_stats_db()[0]`）。"""
+    return volume_stats_db(path)[0]
 
 
 _RE_BLACK = re.compile(r"black_duration:\s*([\d.]+)")

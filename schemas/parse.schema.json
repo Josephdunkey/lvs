@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longvideostudio.local/schemas/parse.schema.json",
+  "title": "parse.json —— 拍摄稿解析结果",
+  "description": "`lvs parse` 的产物：把拍摄稿切成段（segments）与画面位（visual_marks）。下游 `lvs shots` 只在这里取文本，不重解析原稿。",
+  "type": "object",
+  "required": ["source", "segments"],
+  "properties": {
+    "source": { "type": "string", "description": "拍摄稿路径" },
+    "title": { "type": "string" },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "title_card": { "type": "string" },
+        "cover": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "cold_open": { "$ref": "#/$defs/block" },
+    "segments": { "type": "array", "items": { "$ref": "#/$defs/segment" } },
+    "uncertain": {
+      "type": "array",
+      "description": "解析时拿不准、需要人看一眼的地方（不静默丢）",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "type": "string" },
+          "name": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "lines": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "visual_mark_table": {
+      "type": "array",
+      "description": "稿末「画面位清单」表的逐行解析（time_raw / time_seconds / visual / suggestion 的命名沿用 parser 现状）",
+      "items": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "beat": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "kind": { "type": ["string", "null"] }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "kind": { "type": ["string", "null"] },
+        "text": { "type": "string" },
+        "beats": { "type": "array", "items": { "$ref": "#/$defs/beat" } }
+      }
+    },
+    "block": {
+      "type": "object",
+      "properties": {
+        "start": { "type": ["number", "null"] },
+        "end": { "type": ["number", "null"] },
+        "source": { "type": "string" },
+        "text": { "type": "array", "items": { "type": "string" } },
+        "narration": { "type": "array", "items": { "type": "string" } },
+        "visual_marks": { "type": "array", "items": { "type": "string" } },
+        "beats": { "type": "array", "items": { "$ref": "#/$defs/beat" } },
+        "flow": { "type": "array", "items": { "$ref": "#/$defs/flow" } }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "required": ["index", "heading", "narration"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "heading": { "type": "string" },
+        "start": { "type": ["number", "null"] },
+        "end": { "type": ["number", "null"] },
+        "timecode_raw": { "type": "string" },
+        "narration": { "type": "array", "items": { "type": "string" } },
+        "visual_marks": { "type": "array", "items": { "type": "string" } },
+        "flow": { "type": "array", "items": { "$ref": "#/$defs/flow" } },
+        "excluded": { "type": "array", "description": "被排除的内容：逐字稿里是字符串，引原文/钩子类块是 {kind,text,line} 对象（两种都合法 —— 实测 UGE03/MM01/NW01P1 就是后者）", "items": { "type": ["string", "object"] } }
+      }
+    }
+  }
+}

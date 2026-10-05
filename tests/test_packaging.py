@@ -55,7 +55,7 @@ def _build_wheel(tmp_path: Path) -> Path | None:
         f = ROOT / name
         if f.is_file():
             shutil.copy2(f, src / name)
-    for name in ("lvs", "workflows"):
+    for name in ("lvs", "workflows", "schemas"):
         shutil.copytree(ROOT / name, src / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
@@ -119,6 +119,20 @@ def test_wheel_contains_comfyui_workflow_templates(wheel_names: list[str]):
     on_disk = {p.name for p in (ROOT / "workflows").glob("*.json")}
     packed = {Path(n).name for n in wf}
     assert on_disk <= packed, f"这些模板没打进包：{sorted(on_disk - packed)}"
+
+
+def test_wheel_contains_the_json_schemas(wheel_names: list[str]):
+    """★ 产物契约（`schemas/*.json`）是**运行时要读的数据**：`lvs config check` 靠它。
+
+    `lvs/schemas.py` 按 `PROJECT_ROOT/schemas` 找（装完 = `site-packages/schemas`），
+    所以它必须落在 wheel 的顶层 —— 与 `workflows/*.json` 同一个道理：
+    **漏了不报错，只是那条命令装完就不可用**。
+    """
+    packed = [n for n in wheel_names if n.startswith("schemas/") and n.endswith(".json")]
+    on_disk = {p.name for p in (ROOT / "schemas").glob("*.json")}
+    assert on_disk, "源码树里就没有 schemas/*.json"
+    missing = sorted(on_disk - {Path(n).name for n in packed})
+    assert missing == [], f"这些契约没打进 wheel（`lvs config check` 装完会用不了）：{missing}"
 
 
 # ---- GUI 的模板与静态资源不能漏 ----------------------------------------------

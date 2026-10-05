@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "tomli>=2.0,<3; python_version < '3.11'",
+    # 产物契约（`schemas/*.json`）的校验器 —— `lvs config check` 与 `lvs/schemas.py` 靠它。
+    # 纯 Python、几十 KB，放**必装**不心疼：它是"配置写错了要早点说"那条命令的地基。
+    "jsonschema>=4,<5",
 ]
 
 [project.optional-dependencies]
@@ -72,7 +75,11 @@ include = ["lvs*"]
 
 [tool.setuptools.package-data]
 # 生图工作流模板是**运行时要读的数据**，必须打进包里 —— 光有 .py 不够。
-"lvs" = ["../workflows/*.json"]
+#
+# 产物契约（`schemas/*.json`，P2）同理：`lvs/schemas.py` 按 `PROJECT_ROOT/schemas` 找它
+# （`PROJECT_ROOT` = `lvs/` 的上一级，装完就是 `site-packages/`），所以它必须落在
+# wheel 的**顶层** `schemas/`。判据在 `tests/test_packaging.py`（真建 wheel 看内容）。
+"lvs" = ["../workflows/*.json", "../schemas/*.json"]
 
 # ★ GUI 的模板与静态资源同样是**运行时要读的数据**（Flask 按 `lvs/gui/` 找 templates/static）。
 #

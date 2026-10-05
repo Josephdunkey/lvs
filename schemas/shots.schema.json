@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longvideostudio.local/schemas/shots.schema.json",
+  "title": "shots.json —— 分镜表",
+  "description": "`lvs shots` 的产物，也是全流程的真相源（给人手改的那份）。与 lvs/handoff.py 的 REQUIRED_FIELDS / VALID_SOURCES 互为镜像：schema 与 handoff 任一边改，tests/test_schemas.py 必须同时改，否则变红。",
+  "type": "object",
+  "required": ["shots"],
+  "properties": {
+    "title": { "type": "string" },
+    "count": { "type": "integer", "minimum": 0 },
+    "style": { "type": "string" },
+    "visual_mode": { "enum": ["graphic", "photo"] },
+    "source_mode": { "type": "string" },
+    "source": { "type": "string" },
+    "notes": { "type": "array" },
+    "by_kind": { "type": "object" },
+    "by_source": { "type": "object" },
+    "negation_flags": { "type": "object" },
+    "shots": { "type": "array", "items": { "$ref": "#/$defs/shot" } }
+  },
+  "$defs": {
+    "shot": {
+      "type": "object",
+      "required": ["id", "source", "narration", "visual"],
+      "properties": {
+        "id": { "type": "integer", "description": "全流程按它对位（素材文件名 / 音轨 / 字幕边界）" },
+        "source": {
+          "enum": ["pexels", "local", "library", "graphic"],
+          "description": "必须与 handoff.VALID_SOURCES 一致（sources.MODES 去掉 auto ∪ prompting.KIND_GRAPHIC）"
+        },
+        "narration": { "type": "string", "pattern": "\\S", "description": "配音与字幕的原文；空白串 = 缺" },
+        "visual": { "type": "string", "pattern": "\\S", "description": "画面描述（生图提示词的来源）" },
+        "kind": { "type": "string" },
+        "scene": { "type": "string" },
+        "segment": { "type": "integer" },
+        "segment_heading": { "type": "string" },
+        "prompt": { "type": "string" },
+        "style": { "type": "string" },
+        "keywords": { "type": "array" },
+        "start": { "type": ["number", "null"] },
+        "end": { "type": ["number", "null"] },
+        "status": { "type": "string" },
+        "generated_by": { "type": "string" },
+        "resolved_by": { "type": "string" },
+        "gen_workflow": { "type": ["string", "null"] },
+        "audio_path": { "type": ["string", "null"] },
+        "audio_duration": { "type": ["number", "null"] },
+        "asset_path": { "type": ["string", "null"] },
+        "library_asset": { "type": ["string", "null"] },
+        "source_pinned": { "type": "boolean" },
+        "reference_image": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

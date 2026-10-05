@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longvideostudio.local/schemas/qc.schema.json",
+  "title": "成片自检报告（final-report.json）",
+  "description": "`lvs qc --final` 的产物：ffprobe 探测 + N 帧抽检（存在 / 非黑帧）+ 音频静音/削波 + 字幕存在。★ 默认只报警不改判：它**不进 G5 门禁判定**（见 lvs/criteria.py: G5 是人的事）。",
+  "type": "object",
+  "required": ["stage", "video", "ok", "counts", "checks"],
+  "properties": {
+    "stage": { "const": "qc-final" },
+    "task": { "type": "string" },
+    "video": { "type": "string" },
+    "subtitle": { "type": ["string", "null"] },
+    "checked_at": { "type": "string" },
+    "ok": { "type": "boolean", "description": "没有任何 error 级结论（warn 不影响 ok）" },
+    "duration_s": { "type": ["number", "null"] },
+    "counts": {
+      "type": "object",
+      "required": ["ok", "warn", "error"],
+      "properties": {
+        "ok": { "type": "integer", "minimum": 0 },
+        "warn": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": ["id", "level", "summary"],
+      "properties": {
+        "id": { "enum": ["probe", "streams", "frames", "audio", "subtitle"] },
+        "level": { "enum": ["ok", "warn", "error"] },
+        "summary": { "type": "string", "description": "一句话结论（给人看，也是 --json 的 detail 之外的唯一必读字段）" },
+        "detail": { "type": "object" }
+      }
+    }
+  }
+}

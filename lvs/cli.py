@@ -104,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     # 典型的"定义了却从不接线"。agent 在跑长任务前要机器可读地确认环境，
     # 没有这个开关就只能去解析 `[警告] xxx` 这种中文散文。
     p.add_argument("--json", action="store_true", help="机器可读输出（体检项数组，给 Agent 用）")
+    p.add_argument("--agent", action="store_true",
+                   help="先打 ≤20 行人话结论（只列没通过的），再接 JSON —— 排障用")
 
     p = sub.add_parser("parse", parents=[common], help="解析拍摄稿 → parse.json")
     p.add_argument("manuscript", metavar="拍摄稿.md", nargs="?", help="拍摄稿路径")
@@ -284,6 +286,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fix", action="store_true", help="彩度超标就地转灰度（原图移入 _fixed/）")
     p.add_argument("--sheet", action="store_true",
                    help="同时生成带镜号的缩略图拼版（contact-sheet-NN.png，给多模态模型一眼看一批）")
+    # ★ `--final`：**同一个命令的两副面孔**。默认还是生图巡检（G3 门禁的一环）；
+    # 加了 `--final` 才是**成片自检**（ffprobe + 抽帧 + 音量 + 字幕）。
+    # 为什么不单开一个命令：它是"同一件事的另一半"（查产物），且**只报警不改判** ——
+    # 与生图巡检共用 `qc` 这个名字，人少记一个词（详见 lvs/qc_final.py 顶部）。
+    p.add_argument("--final", action="store_true",
+                   help="→成片自检：ffprobe（时长/流/分辨率）+ 4 帧抽检 + 音频静音/削波 + 字幕在场")
+    p.add_argument("--video", metavar="PATH",
+                   help="成片路径（默认 .work/<task>/final.mp4）")
+    p.add_argument("--frames", type=int, metavar="N", help="抽检帧数（默认 4）")
+    p.add_argument("--subtitle", metavar="PATH",
+                   help="字幕路径（默认找成片同目录的 subtitle.srt；给 none = 字幕已烧进画面，不查）")
+    p.add_argument("--out", metavar="PATH",
+                   help="自检报告写到这个路径（默认 .work/<task>/qc/final-report.json）")
     p.add_argument("--json", action="store_true", help="机器可读输出（统一结果信封，给 Agent 用）")
 
     p = sub.add_parser(
@@ -342,6 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="列出全部任务（默认只看 UGE 前缀的雨月物语）")
     p.add_argument("--prefix", default="UGE", help="只看某前缀的任务（默认 UGE）")
     p.add_argument("--json", action="store_true", help="机器可读输出（给 Agent 用）")
+    p.add_argument("--fresh", action="store_true",
+                   help="忽略 5 分钟结果缓存，重扫门禁（默认命中缓存直接返回）")
 
     # 续跑一条命令（P1 / T2）：把"我在哪 + 下一步敲什么 + 最近失败了什么"合成一条。
     p = sub.add_parser(
@@ -360,6 +377,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--all", dest="show_all", action="store_true", help="列出全部任务")
     p.add_argument("--json", action="store_true", help="机器可读输出")
+
+    # 配置体检（P2 / B2）：**必填在不在 / 类型对不对 / 键名写没写错 / 各段认不认得出**。
+    # ★ 刻意**不**继承 common：common 也带 `--config`，继承会让 `lvs config check --config X`
+    #   变成"同一个开关出现两次"的歧义。它自己声明一份，措辞也更准（它就是来校验配置的）。
+    # ★ 也刻意**不读任务目录**：它跟 clean 一样是仓库级工具（配置是全项目一份）。
+    p = sub.add_parser(
+        "config",
+        help="配置体检：config.toml 的必填/类型/未知键/段识别（写错了不会报错的那些坑）",
+    )
+    csub = p.add_subparsers(dest="config_command", metavar="<动作>")
+    c = csub.add_parser("check", help="校验配置文件（默认按 --config → $LVS_CONFIG → ./config.toml 找）")
+    c.add_argument("--config", metavar="PATH", help="要校验的配置文件（默认自动定位）")
+    c.add_argument("--json", action="store_true", help="机器可读输出（findings 数组 + 段识别）")
 
     # 行号锚定读取（S4）：取代“转储成 *_numbered.txt 再分页读”。
     # 不接 parents=[common]：它不读配置、不碰任务目录，只看磁盘上的文件。
@@ -677,7 +707,8 @@ def _main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             print(f"配置错误：{exc}", file=sys.stderr)
             config = Config.empty()
-        return run_doctor(config, as_json=bool(getattr(args, "json", False)))
+        return run_doctor(config, as_json=bool(getattr(args, "json", False)),
+                          as_agent=bool(getattr(args, "agent", False)))
 
     # status：续跑摘要（一行一任务）。**不需要配置文件** ——
     # 它按任务前缀自己找 config，找不到也照样列（config 列打「≈」，提示 G2 指纹不可信）。
@@ -705,6 +736,18 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import maptool
 
         return maptool.run_command(args)
+
+    # config check（P2）：配置体检。★ 必须排在 `Config.load` **之前** ——
+    # "配置本身坏了"正是它要报的错；先 load 的话会先在 cli 这层炸成一句
+    # `配置错误：…` 并退出 2，报告里就少了"哪一行、哪个键、怎么改"。
+    # 它自己调 `Config.load` 并把异常转成 finding（见 lvs/configcheck.check）。
+    if args.command == "config":
+        if getattr(args, "config_command", None) != "check":
+            print("用法：lvs config check [--config 配置文件] [--json]")
+            return 2
+        from lvs import configcheck
+
+        return configcheck.run_command(config_path, args)
 
     # 其余命令：必须能定位到配置
     if not config_path:
@@ -743,6 +786,15 @@ def _main(argv: list[str] | None = None) -> int:
         from lvs import shots as shots_mod
 
         return shots_mod.run_command(config, Workspace.read(_resolve_task(args)), args)
+
+    # `qc --final`（P2）：成片自检 —— **只读**。它不写门禁账本、不记阶段轨迹、
+    # 不建任务目录（所以走 `Workspace.read`，与 board/gate 同一条路）。
+    # ★ 这也是验收项④的落地方式：**qc 的结果只打印/落盘，不进 G5 判定** ——
+    #   它在 `_ENVELOPE_COMMANDS` 之外，因此连 `stage.note_stage_end` 都不会碰。
+    if args.command == "qc" and getattr(args, "final", False):
+        from lvs import qc_final
+
+        return qc_final.run_command(config, Workspace.read(_resolve_task(args)), args)
 
     # `lvs bgm prompt` 只看会用什么提示词（读 shots.json）：同 `board` 一样**不该替当前目录建
     # 任务目录**（票 23）。其余动作（generate / download / mix）要写产物，仍走下面的 `.ensure()`。

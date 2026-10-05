@@ -58,7 +58,9 @@ while 退出码 == 3:                       # 3 = 等人审
 |---|---|---|
 | `parse` `shots` `assets` `voice` `build` `run` | ✅ | 散文在前，**信封是最后一段** |
 | `gate` | ✅ | 干净 JSON |
-| `qc` | ✅ | 干净 JSON |
+| `qc` | ✅ | 干净 JSON（生图巡检，G3 判据） |
+| `qc --final` | ✅ | 干净 JSON（**成片自检报告**：ffprobe / 抽帧 / 音频 / 字幕；★ 只报警不改判，**不进 G5 门禁**） |
+| `config check` | ✅ | 干净 JSON（配置体检 findings + 段识别；退出码 0 通过 / 1 有 error / 2 找不到文件） |
 | `styles` | ✅ | 干净 JSON |
 | `board` | ✅ | **干净 JSON**（进度 + `next_stage`） |
 | `doctor` | ✅ | **干净 JSON**（体检项数组） |
