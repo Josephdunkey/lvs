@@ -397,59 +397,6 @@ def _fit_to_size(img: Any, size: tuple[int, int]) -> Any:
     return img.resize((w, h), Image.LANCZOS)
 
 
-def _band_mask(size: tuple[int, int], top: int, bottom: int, soft: int) -> Any:
-    """纵向软边遮罩：`top..bottom` 之间全量，向两侧各羽化 `soft` 像素。
-
-    ★ 2026-10-05 用户："主要不要挡画面"。横版以前的压暗是**整条左列从顶黑到底**，
-      画面上下两头全被吃掉；现在只压"字块所在的那条横带"，两头恢复原亮度。
-    """
-    from PIL import Image
-
-    w, h = size
-    soft = max(1, soft)
-    col: list[int] = []
-    for y in range(h):
-        if y < top:
-            v = max(0.0, 1.0 - (top - y) / soft)
-        elif y > bottom:
-            v = max(0.0, 1.0 - (y - bottom) / soft)
-        else:
-            v = 1.0
-        col.append(int(255 * v))
-    strip = Image.new("L", (1, h))
-    strip.putdata(col)
-    return strip.resize((w, h), Image.BILINEAR)
-
-
-def _scrim(size: tuple[int, int], orientation: str, strength: float = 0.82,
-           reach: float = 0.72, band: tuple[int, int] | None = None,
-           soft: int = 0) -> Any:
-    """压暗层：横版压左侧、竖版压上部 —— 都是为了让字有足够对比。
-
-    `band=(top, bottom)` 时再叠一层纵向软边遮罩（只有这条横带被压暗），
-    `soft` 为羽化像素数；横版默认走 band。
-    """
-    from PIL import Image
-
-    w, h = size
-    if orientation == "left":
-        strip = Image.new("L", (w, 1))
-        strip.putdata([
-            int(255 * strength * max(0.0, 1.0 - (x / max(1, w - 1)) / reach)) for x in range(w)
-        ])
-        alpha = strip.resize((w, h), Image.BILINEAR)
-        if band is not None:
-            alpha = Image.composite(alpha, Image.new("L", (w, h), 0),
-                                    _band_mask(size, band[0], band[1], soft))
-    else:
-        strip = Image.new("L", (1, h))
-        strip.putdata([
-            int(255 * strength * max(0.0, 1.0 - (y / max(1, h - 1)) / reach)) for y in range(h)
-        ])
-        alpha = strip.resize((w, h), Image.BILINEAR)
-    return Image.new("RGB", (w, h), (0, 0, 0)), alpha
-
-
 #: 行首禁则：这些标点不许出现在一行的开头（中文排版基本规则）。
 #: 实测痛点：`《雨月物语》夜宿荒宅` 折行后 `》` 掉到最后一行行首 —— 观感很业余。
 _NO_LINE_START = "，。、；：？！）》」』】”’…·"
@@ -496,9 +443,14 @@ def _wrap_balanced(draw: Any, line: str, font: Any, max_w: float) -> list[str]: 
 #:   （单行字高必须 ≥ 屏高 8% —— 当年那批只有 2.8%，等于没字）。
 _COVER_FILL = 0.76
 
-#: 压暗强度（0..1）。用户第三轮要"不要挡画面"：0.78 → 0.70 → **0.62**。
-#: 深墨字 + 奶白描边本身就吃得开，压暗只负责"托住字"，不该把画面蒙成灰玻璃。
-_COVER_SCRIM = 0.62
+#: 压暗层：**已整体删除**（2026-10-05 第四轮，用户："文字那块有个黑影"）。
+#:
+#: 对照实验（`.work/tmp/_scrimprobe.py`：同一批底图在 0.00 / 0.30 / 0.45 三档重出）：
+#: **0.30 与 0.45 都看得出一块方形的黑斑**，而字的可读性几乎没提升
+#: —— 字块本身就占屏高的 ~57%，压暗带必然跟着变成一大块。
+#: 而"深墨字 (18,24,44) + 奶白描边 (250,248,240)"本身就是**明暗双保险**：
+#: 暗底靠描边、亮底靠墨字，不需要压暗托底。
+#: 守卫用例：`test_cover_base_is_untouched_outside_the_text_block`。
 
 _COVER_INK = (18, 24, 44)
 _COVER_PAPER = (250, 248, 240)
@@ -595,10 +547,10 @@ def _trim_flat_bands(img: Any, *, tol: float = 9.0, min_frac: float = 0.06) -> A
 
 def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out: Path,
                  *, layout: str = "left", font_file: str | None = None) -> Path:
-    """把封面字叠到底图上，输出 PNG。`layout` 决定字块位置与压暗方向。
+    """把封面字叠到底图上，输出 PNG。`layout` 决定字块位置（两版都是左对齐，已不再压暗底图）。
 
-    - `left`（B站横版）：左侧压暗 + 左对齐大字，主体留在右侧；
-    - `top`（抖音竖版）：上部压暗 + 居中大字，避开底部操作区。
+    - `left`（B站横版）：左对齐大字，主体留在右侧；
+    - `top`（抖音竖版）：上部左对齐大字，避开底部操作区。
 
     ★ 2026-10-05 重做（用户反馈"那几张图不好看 / 封面的字也不够大"）：
       ① 字号口径从"不许折行、放不下就缩"改成"**折行撑满**" —— 旧口径为了让三行
@@ -626,19 +578,20 @@ def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out
     else:
         canvas = _gradient(size)
 
-    # 压暗层挪到"字块算完"之后再合成 —— 只有知道字块在哪，才能只压那一条横带。
     draw = ImageDraw.Draw(canvas)
 
     # ★ 字块**占地**（2026-10-05 用户第二轮反馈："再小半个字号，主要不要挡画面"）：
     #   竖版把字收进上半屏（底 0.74 → 0.62）—— 下半屏整个留给画面；
     #   横版不再横贯整幅（右 0.95 → 0.80）—— 右侧至少留出 20% 让主体露脸。
     #   配合 `_COVER_FILL` 降半号，同一句话占的像素面积降了约 1/3。
+    # ★ 两版都左对齐（2026-10-05 第四轮，用户："竖版封面…帮我把
+    #   文字尽量搞成左对齐"）。竖版以前是居中，三行长短不一时左边参差不齐。
+    #   左边距：横版 0.055、竖版 0.07（竖版屏宽小、舍得多留一点）。
     if layout == "left":
         box = (int(w * 0.055), int(h * 0.08), int(w * 0.80), int(h * 0.90))
-        align_center = False
     else:
-        box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.62))
-        align_center = True
+        box = (int(w * 0.07), int(h * 0.05), int(w * 0.95), int(h * 0.62))
+    align_center = False
     max_w = box[2] - box[0]
     max_h = box[3] - box[1]
 
@@ -674,22 +627,6 @@ def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out
     block_h = line_h * len(rows)
     top = box[1] + max(0, (max_h - block_h) // 2)
 
-    # ★ 压暗只围字块走（2026-10-05 第三轮："主要不要挡画面"）：
-    #   横版不再是整条左列从顶黑到底，只压字块那条横带（上下各留半行做羽化），
-    #   射程也从 0.72 收到 0.62；竖版射程贴着字块末行收，不再一律吃满 0.52 屏高。
-    #   强度 0.70 → `_COVER_SCRIM`(0.62)：画面明显更亮，字靠描边照样立得住。
-    pad = line_h // 2
-    if layout == "left":
-        reach: float = 0.62
-        band: tuple[int, int] | None = (max(0, top - pad), min(h, top + block_h + pad))
-    else:
-        reach = max(0.26, min(0.52, (top + block_h + pad) / h))
-        band = None
-    layer, alpha = _scrim(size, "left" if layout == "left" else "top",
-                          strength=_COVER_SCRIM, reach=reach, band=band,
-                          soft=max(8, int(h * 0.05)))
-    canvas = Image.composite(layer, canvas, alpha)
-    draw = ImageDraw.Draw(canvas)
     # 描边 0.07 字高：0.11 时**描边把字骨吃掉了**（实测渲染成了空心描边字，
     # 不像 001/002 的粗黑字）。粗黑体 + 细一圈奶白边才是房规。
     stroke = max(3, int(font.size * 0.07))

@@ -416,39 +416,62 @@ def _crossed_canvas(size: tuple[int, int], color: tuple[int, int, int] = (255, 2
     return im
 
 
-def test_cover_scrim_left_layout_keeps_top_and_bottom_bright(tmp_path: Path):
-    """★ 用户 2026-10-05 第三轮："主要不要挡画面"。
+def test_cover_base_is_untouched_outside_the_text_block(tmp_path: Path):
+    """★ 压暗层已整体删除（用户 2026-10-05 第四轮："文字那块有个黑影"）。
 
-    横版压暗自 2026-10-05 起只压**字块那条横带**（`_scrim(band=...)`）。
-    底图纯白时，画面左上/左下（字块之外）必须仍接近原色 ——
-    旧版是"整条左列从顶黑到底"，这两个角会被压掉 60+ 个色阶。
+    封面只许**画字**，不许改动底图的任何其他像素 —— 所以"变化像素"的纵向包围盒
+    必须落在字块的纵向范围里（±40 px 给抗锯齿留余量）。
+    旧版那层压暗覆盖屏高的 11 %–87 %，一层回来这条用例立刻红。
     """
-    from PIL import Image
+    from PIL import Image, ImageChops
 
-    base = tmp_path / "white.png"
-    _crossed_canvas(publish.BILIBILI_SIZE).save(base)
-    out = publish.render_cover(base, ["他七年没回家", "那晚睡的床底下是什么"],
+    base_path = tmp_path / "base.png"
+    _crossed_canvas(publish.BILIBILI_SIZE).save(base_path)
+    out = publish.render_cover(base_path, ["他七年没回家", "那晚睡的床底下是什么"],
                                publish.BILIBILI_SIZE, tmp_path / "c.png")
-    with Image.open(out) as im:
-        px = im.convert("RGB").load()
-    w, h = publish.BILIBILI_SIZE
-    corners = {"左上": px[int(w * 0.02), int(h * 0.02)],
-               "左下": px[int(w * 0.02), int(h * 0.98)]}
-    bad = {k: v for k, v in corners.items() if min(v) < 240}
-    assert not bad, f"字块之外的画面被压暗了：{bad}（要求每个通道 ≥ 240）"
+    with Image.open(base_path) as a, Image.open(out) as b:
+        bbox = ImageChops.difference(a.convert("RGB"), b.convert("RGB")).convert("L").getbbox()
+    assert bbox is not None, "底图一个像素都没变 —— 说明字根本没画上去"
+    rows = _text_rows(out, publish.BILIBILI_SIZE)
+    assert rows, "封面上一个字都没找到（叠字没生效）"
+    lo, hi = min(rows) - 40, max(rows) + 40
+    assert bbox[1] >= lo and bbox[3] <= hi, (
+        f"字块之外的画面被改动了：变化范围 y {bbox[1]}–{bbox[3]}，字块 y {min(rows)}–{max(rows)}")
 
 
-def test_cover_scrim_top_layout_keeps_lower_half_bright(tmp_path: Path):
-    """竖版压暗的射程必须收在字块附近 —— 下半屏整个留给画面。"""
+def _line_starts(out: Path, size: tuple[int, int]) -> list[int]:
+    """每一行字的**最左**墨/边像素 x 坐标（按连续行分组）。"""
     from PIL import Image
 
-    base = tmp_path / "white.png"
-    _crossed_canvas(publish.DOUYIN_SIZE).save(base)
-    out = publish.render_cover(base, ["他七年没回家", "那晚睡的床底下是什么"],
-                               publish.DOUYIN_SIZE, tmp_path / "c.png", layout="top")
     with Image.open(out) as im:
         px = im.convert("RGB").load()
-    w, h = publish.DOUYIN_SIZE
-    for frac in (0.60, 0.80, 0.95):
-        v = px[int(w * 0.25), int(h * frac)]   # 避开中轴线
-        assert min(v) >= 240, f"竖版 {frac:.0%} 高处被压暗了：{v}（要求每个通道 ≥ 240）"
+    w, _ = size
+    rows = _text_rows(out, size)
+    groups: list[list[int]] = []
+    for y in rows:
+        if groups and y != groups[-1][-1] + 1:
+            groups.append([])
+        if not groups:
+            groups.append([])
+        groups[-1].append(y)
+    starts = []
+    for g in groups:
+        xs = [x for y in g for x in range(w) if px[x, y] in (publish._COVER_INK, publish._COVER_PAPER)]
+        if xs:
+            starts.append(min(xs))
+    return starts
+
+
+def test_cover_vertical_lines_are_left_aligned(tmp_path: Path):
+    """★ 竖版两行以上必须左对齐（用户 2026-10-05 第四轮："尽量搞成左对齐"）。
+
+    居中排版时「他七年没回家」（6 字）与「那晚睡的床底下是什么」（10 字）的行首
+    会差出一大截（实测居中时相差 100+ px）；左对齐则各行行首基本同一 x。
+    """
+    base_path = tmp_path / "base.png"
+    _crossed_canvas(publish.DOUYIN_SIZE).save(base_path)
+    out = publish.render_cover(base_path, ["他七年没回家", "那晚睡的床底下是什么"],
+                               publish.DOUYIN_SIZE, tmp_path / "c.png", layout="top")
+    starts = _line_starts(out, publish.DOUYIN_SIZE)
+    assert len(starts) >= 2, f"至少要两行才谈得上对齐，实测 {len(starts)} 行：{starts}"
+    assert max(starts) - min(starts) <= 6, f"竖版行首没对齐：{starts}"
