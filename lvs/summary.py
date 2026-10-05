@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime
 import json
 import sys
+import time
 import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -61,6 +62,16 @@ ARTIFACT_KEYS = "parse / shots / narration / srt / final / publish"
 
 #: `--brief` 最多打几行任务行 —— 加上表头/分隔/尾注正好 8 行封顶。
 MAX_BRIEF_ROWS = 5
+
+#: `--brief` 的结果缓存（省 token 的主要手段之一：门禁判定要 stat 全任务）。
+#: ★ 为什么必须有失效判据（而不是"缓存 5 分钟就完事"）：门禁/图片数/产物
+#:   全都会在几十秒内被上一条命令改掉 —— **过期状态比慢状态更贵**
+#:   （agent 照它敲下一条命令就会踩空）。所以缓存 key 里带"任务目录指纹"：
+#:   任务目录自身 + 一级子项（gates.json / manifest.json / publish / assets…）的
+#:   mtime 最大值，任一变动即重扫。
+CACHE_FILENAME = ".status-brief.json"
+CACHE_VERSION = 1
+CACHE_TTL_SECONDS = 300.0
 
 
 def _fix_console() -> None:
@@ -225,9 +236,36 @@ def collect(
     show_all: bool = False,
     config_override: Path | None = None,
     root: Path = PROJECT_ROOT,
+    use_cache: bool = True,
+    max_age: float = CACHE_TTL_SECONDS,
+    info: CacheInfo | None = None,
 ) -> list[TaskRow]:
+    """采集任务摘要。`use_cache` 时命中同 key + 同指纹 + 未过期的缓存就直接返回。
+
+    `info`（可选，出参）：告诉调用方这次是"现扫"还是"读缓存、多旧"。
+    """
+    chosen = select_tasks(task_dirs(root), task=task, prefix=prefix, show_all=show_all)
+    key = {
+        "task": (task or "").strip().lower() or None,
+        "prefix": prefix,
+        "all": bool(show_all),
+        "config": config_override.name if config_override is not None else "",
+        "tasks": [p.name for p in chosen],
+    }
+    if use_cache and chosen:
+        cached = read_cache(root)
+        if cached and cached.get("key") == key:
+            age = time.time() - float(cached.get("written_at") or 0)
+            stamps = {p.name: _task_stamp(p) for p in chosen}
+            if age <= max_age and cached.get("stamps") == stamps:
+                if info is not None:
+                    info.used = True
+                    info.age_s = age
+                    info.generated_at = str(cached.get("generated_at") or "")
+                return [TaskRow(**row) for row in cached["rows"]]
+
     rows: list[TaskRow] = []
-    for task_dir in select_tasks(task_dirs(root), task=task, prefix=prefix, show_all=show_all):
+    for task_dir in chosen:
         name = task_dir.name
         cfg_name = _cfg_name_for(name, config_override)
         opened, total, nxt, err = gate_state(name, cfg_name, root=root)
@@ -244,7 +282,84 @@ def collect(
                 error=err,
             )
         )
+    if use_cache:
+        write_cache(root, key, rows, chosen)
     return rows
+
+
+# ---- 结果缓存（--brief 的 5 分钟缓存） --------------------------------------
+
+
+@dataclass
+class CacheInfo:
+    """这次结果是现扫的还是缓存来的（`--json` 会带上，人看的表格用不着）。"""
+
+    used: bool = False
+    age_s: float = 0.0
+    generated_at: str = ""
+
+
+#: 摘要**正文之外**还会读的目录：图片数（`_count_images`）就是数这两个里的
+#: `shot-*.png`。必须单独列进来 —— 往里加一张图只刷新**它自己**的 mtime，
+#: 不会刷新上层的 `assets/`（第一版漏了这个，测试 `test_a_new_image_...` 抓到）。
+_STAMP_SUBDIRS: tuple[str, ...] = ("assets/local", "assets/graphic")
+
+
+def _task_stamp(task_dir: Path) -> float:
+    """任务目录指纹：目录自身 + 一级子项 + 图片目录的 mtime 最大值（只 stat，不读正文）。
+
+    覆盖到"变了就会改变摘要"的所有东西：`gates.json` / `manifest.json` /
+    `publish/` / `assets/`（一级子项）以及 `assets/local|graphic`（图片数）。
+    新增/删除图片会刷新这两个目录的 mtime → 缓存失效 → 不会报旧张数。
+    """
+    targets = [task_dir, *(task_dir / sub for sub in _STAMP_SUBDIRS)]
+    try:
+        targets.extend(task_dir.iterdir())
+    except OSError:  # pragma: no cover - 任务目录被删
+        pass
+    stamps: list[float] = []
+    for path in targets:
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:  # pragma: no cover - 竞争删除
+            continue
+    return max(stamps) if stamps else 0.0
+
+
+def _cache_path(root: Path) -> Path:
+    return root / WORK_DIRNAME / CACHE_FILENAME
+
+
+def read_cache(root: Path) -> dict:
+    """读缓存；文件不在 / 坏了 / 版本对不上 → 返回 {}（当没有）。**绝不抛**。"""
+    try:
+        raw = _cache_path(root).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+        return {}
+    if not isinstance(data.get("rows"), list):
+        return {}
+    return data
+
+
+def write_cache(root: Path, key: dict, rows: list[TaskRow], chosen: list[Path]) -> None:
+    """落盘；任何失败都吞掉（缓存是增强，绝不能把 status 弄挂）。"""
+    payload = {
+        "version": CACHE_VERSION,
+        "written_at": time.time(),
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "key": key,
+        "stamps": {p.name: _task_stamp(p) for p in chosen},
+        "rows": [asdict(r) for r in rows],
+    }
+    try:
+        path = _cache_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:  # pragma: no cover - 磁盘满 / 只读
+        pass
 
 
 # ---- 渲染 -------------------------------------------------------------------
@@ -275,7 +390,8 @@ def _row(cells: list[str]) -> str:
     return " ".join(_pad(c, w) for c, (_, w) in zip(cells, _COLUMNS)).rstrip()
 
 
-def format_table(rows: list[TaskRow], *, brief: bool = True, empty: str = "") -> str:
+def format_table(rows: list[TaskRow], *, brief: bool = True, empty: str = "",
+                 note: str = "") -> str:
     """表格正文。`brief` 时**保证 ≤ 8 行**（表头 + 分隔 + ≤5 行任务 + ≤1 行尾注）。
 
     `empty`：一个任务都没选中时打什么（调用方知道是否带了 `--task`，提示能写得更准）。
@@ -307,6 +423,8 @@ def format_table(rows: list[TaskRow], *, brief: bool = True, empty: str = "") ->
             tail = f"…另有 {len(rows) - len(shown)} 个任务（--all 看全部）"
         if tail:
             lines.append(tail)
+        elif note:                      # 尾注位空着才用缓存提示补位（仍是 ≤8 行）
+            lines.append(note)
     else:
         lines.append("")
         lines.append(f"产物列顺序：{ARTIFACT_KEYS}；Y=在，-=无")
@@ -320,18 +438,33 @@ def run_command(config_path: Path | None, args) -> int:  # noqa: ANN001 - 由 cl
     """`lvs status` 的入口。**不需要配置文件**（找不到也照样列，config 列打「≈」）。"""
     _fix_console()
     explicit = bool(getattr(args, "config", None))
+    fresh = bool(getattr(args, "fresh", False))
+    info = CacheInfo()
     rows = collect(
         task=getattr(args, "task", None),
         prefix=getattr(args, "prefix", None) or "UGE",
         show_all=bool(getattr(args, "show_all", False)),
         config_override=config_path if explicit else None,
+        use_cache=not fresh,
+        info=info,
     )
     if getattr(args, "json", False):
-        print(json.dumps({"tasks": [asdict(r) for r in rows]}, ensure_ascii=False, indent=2))
+        payload = {
+            "tasks": [asdict(r) for r in rows],
+            "cache": {"used": info.used, "age_s": round(info.age_s, 1),
+                      "generated_at": info.generated_at},
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     empty = ""
     if getattr(args, "task", None):
         empty = (f"没有任务 `{args.task}`：.work/{args.task}/manifest.json 不存在"
                  "（列全部：`lvs status --all`）")
-    print(format_table(rows, brief=not bool(getattr(args, "legend", False)), empty=empty))
+    brief = not bool(getattr(args, "legend", False))
+    # 缓存提示**只占尾注那一行**（brief 的铁律是 ≤8 行）；有错误要报时错误优先。
+    if brief and info.used and not any(r.error for r in rows):
+        print(format_table(rows, brief=True, empty=empty, note=(
+            f"(缓存 {info.age_s:.0f}s 前的结果；重扫加 --fresh)")))
+    else:
+        print(format_table(rows, brief=brief, empty=empty))
     return 0
