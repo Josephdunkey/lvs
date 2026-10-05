@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -217,14 +218,41 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+#: `os.replace` 在 Windows 上会被"目标正被占用"打回（WinError 5 / 32），
+#: 而那类占用通常只是瞬时的。实测踩到的一次（2026-10-05）：
+#: 上一轮 `lvs bgm` 的 PowerShell 循环没死透，与新循环抢同一个 `bgm.wav`
+#: —— **一次 5 分钟的 CPU 生成全白费**。杀软实时扫描、资源管理器预览、
+#: 同步盘（OneDrive/微云）都会制造同样的瞬时占用，所以这里**重试**而不是直接抛。
+_COMMIT_TRIES = 8
+_COMMIT_BACKOFF_S = 0.25
+
+
 def commit_file(tmp: Path, path: Path) -> None:
     """把**已经写好**的临时文件原子换到正式名（`os.replace`）。
 
     与 `atomic_write_*` 的分工：那两个负责「内容由 Python 写盘」；这个负责
     「内容已由外部程序（ffmpeg）写到 `tmp`，现在原子归位」—— 成片这类大文件
     没法先读进内存，只能这样落地。抽出来是为了让「原子提交」只有一处定义。
+
+    失败时：重试 `_COMMIT_TRIES` 次（退避 0.25s 递增，合计 ≈ 9s）；
+    仍不行才抛，且**不删 `tmp`** —— 里面是已经算完的成品
+    （生成一段 BGM 要几分钟 CPU），删了就得重算。报错里直接告诉人怎么救。
     """
-    os.replace(Path(tmp), Path(path))
+    tmp, path = Path(tmp), Path(path)
+    last: OSError | None = None
+    for attempt in range(_COMMIT_TRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as exc:          # WinError 5/32：瞬时占用
+            last = exc
+            time.sleep(_COMMIT_BACKOFF_S * (attempt + 1))
+    raise PermissionError(
+        f"归位失败：{path} 被别的进程占着，重试 {_COMMIT_TRIES} 次（合计 "
+        f"{_COMMIT_BACKOFF_S * _COMMIT_TRIES * (_COMMIT_TRIES + 1) / 2:.1f}s）仍未成功。"
+        f"成品已完整保留在 `{tmp}`，腾出手来直接改名即可，"
+        f"不用重跑。原因：{last}"
+    ) from last
 
 
 def load_json_safe(path: Path, default: Any = None) -> Any:

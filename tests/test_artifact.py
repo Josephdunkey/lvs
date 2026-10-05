@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import time
+
+import pytest
 from pathlib import Path
 
 from lvs import artifact
@@ -294,3 +296,77 @@ def test_manifest_version_still_warns_on_newer_version(tmp_path, capsys):
     )
     Workspace.read("t", root=tmp_path)
     assert "结构版本" in capsys.readouterr().out
+
+# --- commit_file：Windows 瞬时占用要重试（2026-10-05 实测踩到的坑）--------------
+# 背景：上一轮 `lvs bgm` 的 PowerShell 循环没死透，与新循环抢同一个 `bgm.wav`，
+# `os.replace` 抛 WinError 5 —— 一次 5 分钟的 CPU 生成全白费。
+# 杀软实时扫描 / 资源管理器预览 / OneDrive 同步都会制造同样的瞬时占用。
+
+
+def test_commit_file_retries_through_a_transient_permission_error(tmp_path, monkeypatch):
+    """前两次被占用、第三次成功 —— 必须静默重试，不许把成品丢掉。"""
+    from lvs import artifact
+
+    part = tmp_path / "x.wav.part"
+    part.write_bytes(b"payload")
+    target = tmp_path / "x.wav"
+
+    calls = {"n": 0}
+    real = artifact.os.replace
+
+    def flaky(src_, dst_):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError(5, "Access is denied")
+        return real(src_, dst_)
+
+    monkeypatch.setattr(artifact.os, "replace", flaky)
+    monkeypatch.setattr(artifact, "_COMMIT_BACKOFF_S", 0.0)
+
+    artifact.commit_file(part, target)
+
+    assert calls["n"] == 3, f"应该重试到第 3 次才成功，实测调用 {calls['n']} 次"
+    assert target.read_bytes() == b"payload" and not part.exists()
+
+
+def test_commit_file_keeps_the_part_and_says_how_to_rescue_when_locked_forever(
+    tmp_path, monkeypatch
+):
+    """一直被占：抛错，但**不许删 `.part`**（里面是几十分钟算出来的成品），
+    且报错必须直接告诉人怎么救。"""
+    from lvs import artifact
+
+    part = tmp_path / "y.mp4.part"
+    part.write_bytes(b"very expensive output")
+    target = tmp_path / "y.mp4"
+
+    def always_locked(src_, dst_):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(artifact.os, "replace", always_locked)
+    monkeypatch.setattr(artifact, "_COMMIT_BACKOFF_S", 0.0)
+    monkeypatch.setattr(artifact, "_COMMIT_TRIES", 3)
+
+    with pytest.raises(PermissionError) as err:
+        artifact.commit_file(part, target)
+
+    assert part.exists(), "`.part` 被删了 —— 几十分钟的成品白算"
+    assert str(part) in str(err.value), "报错里没写上 `.part` 在哪，人不知道去哪救"
+    assert "重试 3 次" in str(err.value)
+
+
+def test_commit_file_does_not_swallow_other_os_errors(tmp_path, monkeypatch):
+    """只重试"被占用"。路径不存在之类的错要原样抛 —— 重试没有意义，只会拖 9 秒。"""
+    from lvs import artifact
+
+    part = tmp_path / "z.bin.part"
+    part.write_bytes(b"x")
+
+    def boom(src_, dst_):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(artifact.os, "replace", boom)
+    monkeypatch.setattr(artifact, "_COMMIT_BACKOFF_S", 0.0)
+
+    with pytest.raises(FileNotFoundError):
+        artifact.commit_file(part, tmp_path / "z.bin")
