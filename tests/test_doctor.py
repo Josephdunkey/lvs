@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -182,6 +184,120 @@ class TtsBackendCheckTest(unittest.TestCase):
         # 提示里要列全可选值（用户才知道该填什么）
         for name in ("edge", "openai_speech", "silent"):
             self.assertIn(name, r.detail)
+
+
+class WorkSizeCheckTest(unittest.TestCase):
+    """§2-16：`.work/` 也要进体检 —— 磁盘不能单向膨胀，而且要告诉人**能腾出多少**。
+
+    实测 2026-10-05 = 9.4 GB / 18 个任务（一期 1.4–2.1 GB）：在这条检查之前，
+    这个数字**任何命令都不会告诉你**。
+    """
+
+    def _root(self, tmp: str, tasks: dict[str, int]) -> Path:
+        root = Path(tmp)
+        for name, size in tasks.items():
+            d = root / ".work" / name
+            d.mkdir(parents=True)
+            (d / "blob.bin").write_bytes(b"x" * size)
+        return root
+
+    def test_missing_work_dir_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = doctor.check_work_size(Path(tmp))
+            self.assertEqual(r.status, doctor.PASS)
+            self.assertIn("还没有任务目录", r.detail)
+
+    def test_small_work_dir_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = doctor.check_work_size(self._root(tmp, {"UGE01": 1024}))
+            self.assertEqual(r.status, doctor.PASS)
+            self.assertIn("1 个任务", r.detail)
+
+    def test_big_work_dir_warns_and_says_how_much_is_reclaimable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, {"UGE01": 4096, "UGE02": 1024})
+            before, doctor.WORK_WARN_BYTES = doctor.WORK_WARN_BYTES, 1
+            try:
+                r = doctor.check_work_size(root)
+            finally:
+                doctor.WORK_WARN_BYTES = before
+            self.assertEqual(r.status, doctor.WARN)
+            self.assertIn("2 个任务", r.detail)
+            self.assertIn("lvs clean", r.hint)          # 要给出**能照抄的命令**
+            self.assertIn("--keep 1", r.hint)
+            self.assertIn("不受影响", r.hint)            # 必须说清"不碰素材库"
+
+
+class OptionalDepsCheckTest(unittest.TestCase):
+    """§2-21：GUI / 投稿物料 / 生图质检三套可选依赖 —— 缺哪条说哪条，并给装法。"""
+
+    def test_reports_pass_or_names_the_missing_group(self):
+        r = doctor.check_optional_deps()
+        self.assertIn(r.status, (doctor.PASS, doctor.WARN))
+        if r.status == doctor.PASS:
+            for label in ("GUI", "投稿物料/拼版", "生图质检"):
+                self.assertIn(label, r.detail)
+        else:
+            self.assertIn("缺", r.detail)
+            self.assertIn("pip install", r.detail)
+
+    def test_missing_module_is_named_with_its_install_command(self):
+        fake = (("假功能", ("lvs_no_such_module_for_test",), "pip install -e .[gui]"),)
+        before, doctor._OPTIONAL_GROUPS = doctor._OPTIONAL_GROUPS, fake
+        try:
+            r = doctor.check_optional_deps()
+        finally:
+            doctor._OPTIONAL_GROUPS = before
+        self.assertEqual(r.status, doctor.WARN)
+        self.assertIn("lvs_no_such_module_for_test", r.detail)
+        self.assertIn("pip install -e .[gui]", r.detail)
+
+
+class AgentReportTest(unittest.TestCase):
+    """§2-21：`--agent` = 人话在前、JSON 在后，**同一份数据**（all_checks 是真源）。"""
+
+    def test_both_new_checks_are_registered(self):
+        names = [c.name for c in doctor.all_checks(Config({}, None))]
+        self.assertIn("磁盘 .work", names, names)
+        self.assertIn("可选依赖", names, names)
+
+    def test_agent_report_lists_only_problems_then_prints_json(self):
+        checks = [
+            doctor.CheckResult("甲", doctor.PASS, "没问题"),
+            doctor.CheckResult("乙", doctor.WARN, "缺个东西", hint="第一句\n第二句"),
+            doctor.CheckResult("丙", doctor.MISSING, "必须有"),
+        ]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor._print_agent_report(Config({}, None), checks)
+        out = buf.getvalue()
+
+        human = out[:out.index("{")]                    # JSON 段之前的才是"人话段"
+        self.assertIn("[警告] 乙：缺个东西", human)
+        self.assertIn("↳ 第一句", human)
+        self.assertNotIn("第二句", human)               # hint 只带第一句，别把提示全铺开
+        self.assertIn("缺失 1 / 警告 1", human)
+        self.assertNotIn("甲：没问题", human)           # 通过项不进人话段
+
+        payload = json.loads(out[out.index("{"):])      # JSON 段必须可解析（全文都在）
+        self.assertEqual(payload["missing"], ["丙"])
+        self.assertEqual(payload["warned"], ["乙"])
+        self.assertEqual(len(payload["checks"]), 3)
+
+
+class AgentReportExitCodeTest(unittest.TestCase):
+    def test_run_with_agent_returns_1_only_when_something_is_missing(self):
+        cfg = Config({}, None)
+        before = doctor.all_checks
+        doctor.all_checks = lambda config: [doctor.CheckResult("甲", doctor.WARN, "小问题")]
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = doctor.run(cfg, as_agent=True)
+        finally:
+            doctor.all_checks = before
+        self.assertEqual(code, 0)                       # 只有警告不算失败（退出码只看"缺失"）
+        self.assertIn("体检 1 项", buf.getvalue())
 
 
 if __name__ == "__main__":

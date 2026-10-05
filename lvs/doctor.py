@@ -334,7 +334,86 @@ def all_checks(config: Config) -> list[CheckResult]:
         check_image_granularity(config),
         check_cast_approval(config),
         check_face_model(config),
+        check_optional_deps(),
+        check_work_size(),
     ]
+
+
+#: `.work/` 到什么体量该提醒回收。实测 2026-10-05 = **9.4 GB / 18 个任务**
+#: （5 期雨月物语各 1.4–2.1 GB）—— 一期任务的中间产物比整个素材库还大，
+#: 而它只会单向膨胀。所以 doctor 必须把它当"体检项"报出来（§2-16）。
+WORK_WARN_BYTES = 5 << 30        # 5 GiB
+
+#: 可选依赖分组：给谁用 → (import 名, 装法)。doctor 过去**查不出**这些，
+#: 于是"GUI 打开就 500 / 封面叠字 ImportError"要翻半天日志才发现是少装了一个包。
+_OPTIONAL_GROUPS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("GUI", ("flask", "tomlkit"), "pip install -e .[gui]"),
+    ("投稿物料/拼版", ("PIL",), "pip install -e .[image]"),
+    ("生图质检", ("cv2", "numpy"), "pip install -e .[qc]"),
+)
+
+
+def check_optional_deps() -> CheckResult:
+    """可选依赖到不到位（§2-21）。
+
+    三条腿各自独立：GUI 少了 flask 是"打不开界面"，投稿物料少了 Pillow 是
+    "封面出不来"，生图质检少了 cv2 是"QC 静默跳过"。**缺哪条说哪条**，
+    别让人对着一个 ImportError 猜。
+    """
+    import importlib.util
+
+    missing: list[str] = []
+    present: list[str] = []
+    for label, modules, install in _OPTIONAL_GROUPS:
+        gone: list[str] = []
+        for mod in modules:
+            try:
+                found = importlib.util.find_spec(mod) is not None
+            except (ImportError, ValueError):     # 父包缺失 / 名字非法
+                found = False
+            if not found:
+                gone.append(mod)
+        if gone:
+            missing.append(f"{label} 缺 {'/'.join(gone)}（{install}）")
+        else:
+            present.append(label)
+    if missing:
+        return CheckResult("可选依赖", WARN, "；".join(missing),
+                           hint="只影响上面点名的功能，主流水线（parse→shots→assets→voice→build）不受影响")
+    return CheckResult("可选依赖", PASS, "、".join(present) + " 三套都在")
+
+
+def check_work_size(root: Path | None = None) -> CheckResult:
+    """`.work/` 占用与**可回收量**（§2-16）：磁盘不能单向膨胀。
+
+    报三件事：总量、任务数/文件数、以及"只留最新一期能腾出多少"。
+    `lvs clean` 是干活的，这里只负责"让人知道该不该去清"——
+    实测这棵树 9.4 GB 之前是**任何命令都不会告诉你的**数字。
+    """
+    from lvs import cleanup
+
+    try:
+        tasks = cleanup.list_tasks(root)
+    except OSError as exc:                      # 量不出来也不能把体检带崩
+        return CheckResult("磁盘 .work", WARN, f"量不出来：{exc}")
+    if not tasks:
+        return CheckResult("磁盘 .work", PASS, "还没有任务目录（跑过流水线才会有中间产物）")
+    total = sum(t.size for t in tasks)
+    files = sum(t.files for t in tasks)
+    newest = tasks[-1]                          # list_tasks 按最近改动**从旧到新**
+    detail = (f"{cleanup._human(total)} / {len(tasks)} 个任务 / {files} 个文件"
+              f"（最大一期 {max(tasks, key=lambda t: t.size).name}）")
+    if total < WORK_WARN_BYTES:
+        return CheckResult("磁盘 .work", PASS, detail)
+    reclaim = total - newest.size
+    hint = "\n".join(
+        [
+            f"回收：`lvs clean` 看清单；`lvs clean --keep 1 --yes` 只留最新一期（≈ {cleanup._human(reclaim)}）",
+            "也可以按期删：`lvs clean --task UGE01 --yes`（素材库 `[paths].lib` 里的原图不受影响）",
+            "★ 删掉的任务要重跑才有产物 —— 确认投稿物料已拷出去再删",
+        ]
+    )
+    return CheckResult("磁盘 .work", WARN, detail, hint=hint)
 
 
 def check_source_mode(config: Config) -> CheckResult:
@@ -506,16 +585,55 @@ def check_image_granularity(config: Config) -> CheckResult:
     return CheckResult("图粒度", PASS, f"{value}（{'每镜一张' if value == 'shot' else '同一画面位共用一张'}）")
 
 
-def run(config: Config, as_json: bool = False) -> int:
-    """跑全部体检，打印报告。返回 0 = 无"缺失"；1 = 有必填项缺失。"""
+def run(config: Config, as_json: bool = False, as_agent: bool = False) -> int:
+    """跑全部体检，打印报告。返回 0 = 无"缺失"；1 = 有必填项缺失。
+
+    三种输出，一种数据（`all_checks` 是唯一真源）：
+    * 默认 —— 给人看的完整报告，每一项都列；
+    * `as_json` —— 只有 JSON 数组（给程序/agent 解析）；
+    * `as_agent` —— **先人话结论（≤20 行，只列没通过的），再接 JSON**
+      （§2-21）：agent 排障要的是结论，人不该为了拿 JSON 把中文散文读一遍。
+    """
     checks = all_checks(config)
 
     if as_json:
         print(json.dumps([asdict(c) for c in checks], ensure_ascii=False, indent=2))
+    elif as_agent:
+        _print_agent_report(config, checks)
     else:
         _print_report(config, checks)
 
     return 1 if any(c.status == MISSING for c in checks) else 0
+
+
+def _print_agent_report(config: Config, checks: list[CheckResult]) -> None:
+    """`--agent`：人话在前（只列非「通过」项），同一份数据的 JSON 在后。
+
+    为什么两份都打：agent 要**机器可读**才能自己判下一步，但把 20 行结论
+    丢掉只给 JSON，人又得自己拼一遍。两份一起打，谁用谁取。
+    """
+    missing = [c for c in checks if c.status == MISSING]
+    warned = [c for c in checks if c.status == WARN]
+    print(f"lvs doctor --agent  (lvs {__version__})")
+    print(f"配置：{config.path if config.path else '未找到（只影响需要密钥的阶段）'}")
+    print(f"体检 {len(checks)} 项：缺失 {len(missing)} / 警告 {len(warned)}"
+          f" / 通过 {len(checks) - len(missing) - len(warned)}")
+    for c in (*missing, *warned):
+        print(f"[{c.status}] {c.name}：{c.detail}")
+        if c.hint:
+            print(f"        ↳ {c.hint.splitlines()[0]}")   # 只带第一句，别把 hint 全铺开
+    if not missing and not warned:
+        print("环境就绪 ✓ —— 没有任何缺失或警告项")
+    print(json.dumps(
+        {
+            "version": __version__,
+            "config": str(config.path) if config.path else "",
+            "missing": [c.name for c in missing],
+            "warned": [c.name for c in warned],
+            "checks": [asdict(c) for c in checks],
+        },
+        ensure_ascii=False, indent=2,
+    ))
 
 
 def _print_report(config: Config, checks: list[CheckResult]) -> None:
