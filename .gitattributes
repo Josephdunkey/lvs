@@ -1,0 +1,55 @@
+# 行尾归一（§2-18）—— 为什么需要显式写在这里：
+# 仓库的 index 一直是 LF（本机 core.autocrlf=true 把工作区换成了 CRLF），
+# 但这只写在**某台机器的 git config** 里：
+#   · 换台机器（autocrlf=false）提交 → 整个文件 CRLF 入库，下次检出就是"整个文件被改"的假 diff；
+#   · 工作区里已经有 5 个文件是**混合行尾**（同一文件里 CRLF/LF 都有）。
+# 所以把约定钉进仓库：文本一律按 LF 入库，二进制显式声明，别让 git 猜。
+
+* text=auto
+
+*.py     text
+*.pyi    text
+*.md     text
+*.txt    text
+*.toml   text
+*.json   text
+*.lock   text
+*.srt    text
+*.yml    text
+*.yaml   text
+*.html   text
+*.css    text
+*.js     text
+
+# Windows 批处理必须是 CRLF（cmd.exe 对 LF 的 goto/label 会出怪问题）
+*.cmd    text eol=crlf
+*.bat    text eol=crlf
+# shell 脚本必须是 LF（CRLF 会让 `#!/bin/bash\r` 直接报 bad interpreter）
+*.sh     text eol=lf
+
+# 二进制：显式声明，免得 git 去做文本归一（.docx/.png 被"修"过就废了）
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.gif    binary
+*.bmp    binary
+*.tif    binary
+*.tiff   binary
+*.ico    binary
+*.pdf    binary
+*.mp3    binary
+*.wav    binary
+*.m4a    binary
+*.flac   binary
+*.mp4    binary
+*.mov    binary
+*.mkv    binary
+*.webm   binary
+*.ttf    binary
+*.otf    binary
+*.ttc    binary
+*.woff   binary
+*.woff2  binary
+*.whl    binary
+*.zip    binary

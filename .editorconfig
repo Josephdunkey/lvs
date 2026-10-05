@@ -1,0 +1,29 @@
+# 编辑器约定（§2-18）：与 .gitattributes 同源 —— 文本一律 UTF-8 + LF + 结尾换行。
+# 为什么单列一份：git 只管"入库时"，编辑器管"保存时"；两边不一致就会出现
+# "没改代码却整文件 diff"（本仓库 lvs/ 下 48 个文件里 31 个曾是 CRLF）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{toml,json,yml,yaml,lock,srt}]
+indent_style = space
+indent_size = 2
+
+[*.{html,css,js}]
+indent_style = space
+indent_size = 2
+
+# markdown 里行尾两个空格是"硬换行"，不能删
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{cmd,bat}]
+end_of_line = crlf
