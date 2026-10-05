@@ -142,3 +142,28 @@ L1 文字锚定 ✅｜**L2 参考图 img2img ✅ 已真机验证**｜L3 LoRA ❌
 - 拍摄稿格式：章名**不能含「传达层」**（会顶掉 `一、传达层` 章）；章内标题用 `>` 行，
   不要 `###`（C031）或 `**加粗**`（C040）。时间码口径 = **正文非空白字符 ÷ 4.5**，
   `scripts/regen_timecodes.py` 可一次重算场景时间码 + 画面位清单 + 头部元信息。
+
+## BGM 权重与环境（2026-10-05 实测，`lvs/bgm.py`）
+
+- ★ **权重走 ModelScope，不要 HF_TOKEN**：`stabilityai/stable-audio-3-small-music` 在 HF 上是
+  **gated**（hf-mirror 回 403 GatedRepoError），但 ModelScope 同名镜像仓**非门控、国内直连**。
+  `lvs bgm download` 首选 ModelScope（列 `repo/files` → 逐个 `Range` 断点续传 → `.part` 原子归位），
+  hf-mirror 只是备选（那条才要令牌）。权重落 `models/stable-audio-3-small-music/`（≈3.3 GB）。
+- ★ **加载完全离线**：`load_model` 把 model_config 里 conditioner 的 `repo_id` + `subfolder`
+  改写成**本地 `model_path`**（`_localize_text_encoders`），`HF_HUB_OFFLINE=1` 也出得了 wav；
+  `weights_state()` **fail-closed**：缺 `t5gemma-b-b-ul2/` 就拦下，别等读完 2.27 GB 才报错。
+- ★ **torch 2.5 + transformers 4.57 跑不动 SA3 的文本编码器**：T5Gemma 编码器只在 torch>=2.6
+  下能造掩码（报 `Using or_mask_function ... require torch>=2.6`）。修法在 `lvs/bgm.py`：
+  `_install_t5gemma_encoder_mask_shim()` **只在进程内**把 2D padding 掩码折成 T5GemmaEncoder 官方
+  支持的 4D dict 掩码（语义等价：双向 + 挡 padding；sliding 层再叠 |q-kv| < window），
+  **不改 transformers 文件、不为它升级 torch**（2.4 GB 下载 + 动 GPU 栈，不划算）；
+  torch>=2.6 时自动跳过。判据：`tests/test_bgm.py` 的 t5gemma 用例 + 同提示词 padding 64/128
+  的**非 padding 位置 hidden state 一致**（2e-5 量级）。
+- **stable-audio-tools 必须 0.0.20（GitHub main）**：PyPI 的 0.0.19 没有 SA3 的 `taae_v2` 与
+  `T5GemmaConditioner`；`pip install --no-deps <codeload tarball>`（lora 的 import 已包 try/except）。
+- ★ **这个 venv 是 `--system-site-packages` 建的**（泄漏 `D:\anaconda\Lib\site-packages`）：
+  anaconda 里 numpy-1 编译的包（sklearn/pandas/bottleneck）在 numpy 2.5.3 下报 ABI 错，
+  已把 `scikit-learn` / `pandas` 装成 venv 本地。**别再往这个 venv 装 pytorch-lightning /
+  torchmetrics**（拖 matplotlib → numpy ABI 炸）。
+- 实测（CPU，8 步 pingpong）：`--duration 15` 生成 **89 s**（8 步采样 17 s，其余是加载 3.3 GB）；
+  `lvs bgm mix` 对 1519 s 成片 **189 s** 出 `bgm_final.mp4`（`-c:v copy`，原片不动）。

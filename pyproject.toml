@@ -46,6 +46,18 @@ all = [
     "requests>=2.31,<3", "edge-tts>=6.1,<8",
 ]
 dev = ["pytest>=7.4,<9"]
+# 本地生成可商用 BGM（`lvs bgm`）：Stable Audio 3.0 Small-Music。
+# ★ 故意不进 all：stable-audio-tools 会拖 torch/transformers（GB 级），
+#   与 align 同理 —— 要配乐再单独 `pip install -e .[bgm]`。
+#   权重不在 wheel 里：`lvs bgm download` 走 **ModelScope 国内镜像**（同内容、
+#   非门控、不要 HF_TOKEN —— HF 上那个仓库是 gated）。
+#   torch / transformers 是**直接 import**：T5Gemma 文本编码器要 transformers，
+#   掩码兼容层要 torch 的版本号（见 lvs/bgm.py 顶部注释），所以必须在这里声明。
+bgm = [
+    "stable-audio-tools>=0.0.19,<0.1", "huggingface-hub>=0.27,<1",
+    "torch>=2.0,<3", "transformers>=4.53,<5",
+]
+
 
 [project.scripts]
 lvs = "lvs.cli:main"

@@ -18,8 +18,9 @@
    要某一条先定位再读那一节：`Select-String -Path docs\<篇名>.md -Pattern '^### B0[0-9]'`（编号见《严重等级登记册》）。
 8. **看分镜不要整份读**：`lvs shots --task X --index`（一镜一行，516 KB → 约 18 KB）、`lvs shots --task X --peek 193`（单镜摘要，< 400 字符）；看提示词全文才加 `--full`。这两个开关是只读的，不会建目录、不会改状态。
 9. **覆盖率门禁（防倒退，不是逼补覆盖）**：`.coveragerc` 的 `fail_under = 71`（2026-10-05 实测 74.0%）。要验一条主路径没退步：`./.venv/Scripts/python.exe -m coverage run -m pytest -m "not slow and not gpu"` → `coverage report`（退出码即门禁）→ `coverage json -o .work/tmp/cov.json` → `pytest tests/test_coverage_ratchet.py`（关键模块水位，无 json 时自动 skip）。抬水位规矩见 `.coveragerc` 头注释。
-10. **测试只跑该跑的那一组**：日常 `./.venv/Scripts/python.exe -m pytest -m "not slow and not gpu"`（1150 例 / **96 s**）；只有改了 `artifact` / `workspace` / `pipeline` / `build` 这类**公共底座**才跑全量 `pytest`（1207 例 / 255–276 s）。`-m slow` = 真 ffmpeg / 真子进程 / 真建 wheel / e2e。
+10. **测试只跑该跑的那一组**：日常 `./.venv/Scripts/python.exe -m pytest -m "not slow and not gpu"`（**1281 例 / ≈120 s**，2026-10-05 实测；含 BGM 用例）；只有改了 `artifact` / `workspace` / `pipeline` / `build` 这类**公共底座**才跑全量 `pytest`（1207 例 / 255–276 s）。`-m slow` = 真 ffmpeg / 真子进程 / 真建 wheel / e2e。
 11. **读源码不要整份读**：`./.venv/Scripts/python.exe -m lvs map show <文件> <起行> <止行>`（带行号）、`lvs map grep <正则> --glob "lvs/*.py" -C 2`、`lvs map ls`（列已有编号 dump）。
+12. **BGM（配乐，可选）**：`lvs bgm --task X --config <cfg>` 本地生成可商用配乐（**固定 CPU**，不抢 ComfyUI/TTS 的显存）；只看风格 `lvs bgm prompt`（秒出、不加载模型），混进成片 `lvs bgm mix`（→ `.work/<task>/bgm_final.mp4`，**原片保留**；音量/闪避在 `[bgm]` 段：`volume_db` / `duck_*`）。推理参数照**模型卡**（steps 8 / cfg 1.0 / pingpong，别用 SA2 的 100 步）。权重**已落在** `models/stable-audio-3-small-music/`（≈3.3 GB = `model.safetensors` 2.27 GB + `model_config.json` + `t5gemma-b-b-ul2/` 1.18 GB），**下权重走 ModelScope 国内镜像**（`lvs bgm download` 首选 `stabilityai/stable-audio-3-small-music`，**非门控、不要 HF_TOKEN**；hf-mirror 只是备选、那条才要令牌），加载**完全离线**（`HF_HUB_OFFLINE=1` 实测出得了 wav）。★ torch 2.5 + transformers 4.57 靠 `lvs/bgm.py` 的 T5Gemma 掩码补丁才跑得起来（`torch>=2.6` 时自动跳过）；stable-audio-tools 要 **0.0.20（GitHub main）**，PyPI 的 0.0.19 不支持 SA3。用法与许可见 README「背景音乐 BGM」。
 
 ## 会话纪律（省 token，2026-10-05 增补；源自一个跨夜 9h37m / 1.09 亿 input 的会话复盘）
 

@@ -74,6 +74,7 @@ lvs doctor
 | `lvs styles` | **画面风格预设**：30 个内置（按题材分组、标注是否单色）+ 项目自定义 | — | ✅ 新增 |
 | `lvs init <素材库>` | **接入新项目**：建素材库骨架 + 项目风格/配置 + 体检待办 | `config.<名>.toml`、`00-设定/风格预设.toml` | ✅ 新增 |
 | `lvs publish` | **投稿物料**（B站 / 抖音）：封面**叠三行字** + 标题候选 + 简介 + 标签/话题 | `.work/<任务>/publish/*` | ✅ 新增 |
+| `lvs bgm [generate\|download\|prompt\|mix]` | **背景音乐（BGM）**：本地生成可商用配乐（随文案风格）+ 压低闪避混音 | `.work/<任务>/bgm/*`、`bgm_final.mp4` | ✅ 新增 |
 | `lvs clean` | **清理任务目录**（`.work/` 会越长越大）：默认**只报告**，`--yes` 才真删 | `.work/<任务>/` | ✅ 新增 |
 
 > **六道门禁（G0–G5）**：`script` 拍摄稿 → `shots` 分镜与提示词 → `cast` 定妆参考 →
@@ -308,6 +309,7 @@ lvs shots  --task K005 --source auto      # 交还给逐镜判定（默认）
 | LLM key | ⬜ 待填 | `config.toml [app].openai_api_key`，拆镜质量的关键 |
 | Pexels key | ⬜ 待填 | `config.toml [pexels].api_key`，仅 `source=pexels` 的分镜需要 |
 | ComfyUI + 模型 | ✅ 已装并**真机验证出图** | 代码在 `D:\ComfyUI`（独立 venv），模型见下「本地生图」 |
+| Stable Audio 3.0 Small-Music | ⬜ 待下载 | `lvs bgm download`（HF 仓库 **gated**：先申请访问 + 配 `HF_TOKEN`；走 `hf-mirror.com`）。推理**走 CPU**，不抢 8 GB 显存 |
 
 ### 网络与镜像（重要）
 
@@ -460,6 +462,100 @@ powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='py
 4. `lvs assets` → 该镜被复制/硬链到 `assets/library/`，`resolved_by=library`
 
 > 钉死优于检索：`library_asset` 一旦非空，**跳过一切启发式**，想用哪张用哪张。
+
+---
+
+## 背景音乐 BGM（可选：本地生成 + 压低闪避）
+
+> **为什么本地生成**：成片过去只有旁白，静得像有声书；而**可商用**的曲子在 B 站 / 抖音 / YouTube
+> 各要单独买，换一本书还得重来。于是把"配乐"也当成流水线的一步 —— 零成本、可复现（同 seed 同结果）、
+> 版权干净，而且**旁白永远是主角**。
+
+```powershell
+# 0) 装依赖（故意不进 `all`：stable-audio-tools 会拖 torch/transformers，GB 级）
+#    这条会把推理链一起装上（stable-audio-tools → k-diffusion → torchsde → trampoline、
+#    kornia / clean-fid / clip-anytorch 等）。本机 venv 为复用已有 torch 用了 `--no-deps`，
+#    所以那几包是手工补的 —— 新机器按下面这条装即可。
+# ★ 但 PyPI 上的 stable-audio-tools 0.0.19 **不支持 SA3**（没有 SA3 的 `taae_v2` 解码器，
+#   也没有 `T5GemmaConditioner`）：本机装的是 GitHub main（0.0.20），即
+#   `pip install --no-deps https://codeload.github.com/Stability-AI/stable-audio-tools/tar.gz/refs/heads/main`
+#   （它的 `models/lora/__init__.py` 会 import pytorch-lightning，用不到时手工包 try/except）。
+.venv\Scripts\python.exe -m pip install -e ".[bgm]"
+
+# 1) 下权重 → models/stable-audio-3-small-music/（约 3.3 GB）
+#    走 **ModelScope 国内镜像**（`stabilityai/stable-audio-3-small-music`，同内容、
+#    非门控、**不需要 HF_TOKEN**）；只有 ModelScope 挂了才退回 hf-mirror（那条才要令牌）。
+.venv\Scripts\python.exe -m lvs bgm download --config config.toml
+
+# 2) 只看会用什么提示词 / 风格（**不加载模型**，秒出；调风格用这个）
+.venv\Scripts\python.exe -m lvs bgm prompt --task UGE01 --config config.toml
+
+# 3) 生成 → .work/<任务>/bgm/bgm.wav（+ bgm.json 元信息）
+.venv\Scripts\python.exe -m lvs bgm --task UGE01 --config config.toml
+
+# 4) 混进成片 → .work/<任务>/bgm_final.mp4（**原片保留不动**）
+.venv\Scripts\python.exe -m lvs bgm mix --task UGE01 --config config.toml
+```
+
+**① 自适应文案风格**（讲稿什么调子，配乐就什么调子）—— 两层策略：
+
+| 路径 | 什么时候走 | 做什么 |
+|---|---|---|
+| LLM | `config.toml` 填了 `[app].openai_api_key` | 让 LLM 把讲稿主题/情绪翻成 `genre / instruments / mood / bpm` + 一句英文提示词 |
+| 规则兜底 | 没 key（或 LLM 失败 / `--no-llm`） | 内置"关键词 → 风格"表：历史/庄重→古典弦乐、激昂/热血→管弦乐、悬疑/惊悚→低沉电子、治愈/温情→钢琴、轻松/日常→轻快木管、悲伤/离别→室内乐、神秘/奇幻→氛围；全不命中 → 中性柔和保底 |
+
+LLM 只是"更好"，不是"必须有"：**任何失败都会退回规则**，并把原因写进 `bgm.json.warnings`。
+
+**② 音量适中、不打扰人声** —— `volume` 压低 + `sidechaincompress` 闪避（旁白为 key）：
+
+```toml
+# config.toml 里都是可选的，不给就用这组保守默认
+[bgm]
+volume_db      = -16.0   # BGM 基础音量（负值 = 压低）
+duck           = true    # 人声一出现就把 BGM 再压下去
+duck_threshold = 0.03    # 触发阈值（线性幅度，≈ -30 dBFS）
+duck_ratio     = 8.0     # 压缩比
+duck_attack    = 20.0    # ms
+duck_release   = 400.0   # ms
+duration       = 60      # 生成时长秒（夹在 15–180；混音时循环铺满整片）
+
+# —— 生成参数：默认值照**模型卡**（models/stable-audio-3-small-music/README.md）——
+# SA3 是 rectified-flow，采样器/步数是模型卡给的一套；SA2 那套（100 步 / cfg 6.0 /
+# dpmpp-3m-sde）是给 v-diffusion 的，会走错采样分支且 CPU 上慢十倍。
+steps          = 8       # 采样步数（CPU 上步数≈耗时）
+cfg_scale      = 1.0     # 提示词贴合度
+sampler        = "pingpong"
+```
+
+CLI 同名开关可临时覆盖：`--volume-db` / `--duck-threshold` / `--duck-ratio` / `--no-duck`
+（实测：人声段 BGM 比静音段低 **6.4 dB**，关掉闪避是 0.00 dB）。混音用 `amix=normalize=0`
+（ffmpeg ≥4.4 默认会把每个输入各除一半 —— 那就是"加了 BGM 旁白变小"的经典事故）。
+
+**许可（务必看清，照权重自带的 `LICENSE.md` 原文）**：模型 `stabilityai/stable-audio-3-small-music`，
+**Stability AI Community License** —— 个人 / 组织**年收入 < 100 万美元可商用**（**商用前要在
+`stability.ai/community-license` 注册**）；**生成音频（输出）归使用者所有，用输出不必署名**；
+只有**分发模型 / 衍生权重（含内嵌它的产品）**时才需要随附协议 + "Powered by Stability AI" 标注。
+权重自带 T5Gemma 文本编码器（附 **Gemma Terms of Use**）。
+这些都写进每份 `bgm.json.license`（含 `authoritative` 指向 `LICENSE.md`）；
+换模型 = 换许可证，README 与 `lvs/bgm.py` 一起改。
+
+**约束与失败降级**：
+
+- **推理固定走 CPU**（`device="cpu"`）：8 GB 单卡被 ComfyUI(:8188) 与 Qwen3-TTS(:8100) 串行占用，BGM 不许抢显存 —— 代价是"每 30 秒音频约 1–3 分钟"，所以默认只生成 60 秒的 bed，混音时循环。
+- **离线可用（实测）**：权重齐了（`model.safetensors` 2.27 GB + `model_config.json` +
+  `t5gemma-b-b-ul2/` 1.18 GB ≈ 3.3 GB）就**完全不查 HF、不要 HF_TOKEN** —— `load_model` 把
+  conditioner 的 `repo_id/subfolder` 改写成本地目录，`HF_HUB_OFFLINE=1` 下也能出 wav
+  （UGE03 实测：`--duration 15 --no-llm` 全程 89 s，其中 8 步采样 17 s，其余是加载 3.3 GB 权重）。
+
+- **torch 2.5 上的 T5Gemma 掩码补丁**：transformers ≥4.53 的 T5Gemma 编码器只在 `torch>=2.6`
+  下能造掩码，本机 torch 2.5.1 会抛 `require torch>=2.6`。`lvs/bgm.py` 的
+  `_install_t5gemma_encoder_mask_shim()` **只在进程内**把 2D padding 掩码折成 T5GemmaEncoder
+  官方就支持的 4D dict 掩码（语义一致：双向 + 挡 padding，sliding 层再叠 |q-kv| < window），
+  **不改 transformers 文件、不为它升级 torch**；装了 torch ≥2.6 后这段自动跳过。
+- **推理参数以模型卡为准**：权重下下来后，同目录的 `README.md` 就是 SA3 的用法原文
+  （`get_pretrained_model` + `generate_diffusion_cond_inpaint`，`steps=8 / cfg_scale=1.0 / sampler_type="pingpong"`）——
+  我们按它取默认值，也优先用模型卡那个入口（老版本 SAT 自动退回 `generate_diffusion_cond`）。
+- 权重没下 / 生成失败 **不静默**：打印“缺什么 + 下一步敲什么”（`lvs bgm download` 走 ModelScope，**不要令牌**），退出码 1；前置缺成片 / 缺 BGM 是退出码 2。
 
 ---
 
