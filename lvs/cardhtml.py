@@ -261,8 +261,40 @@ def html_for(card: cards.Card) -> str:
 # ---- 栅格化 ----------------------------------------------------------------
 
 
-def _shoot(exe: str, html_text: str, out: Path) -> None:
-    """把 HTML 截成 PNG。浏览器偶尔先退出后落盘，所以查两次。"""
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """杀掉 `proc` **连同它的子孙进程**。
+
+    ★ 为什么必须连坐（2026-10-05 **实测**，不是理论担忧）：无头浏览器自己会生
+      一堆 helper 进程（msedge 实测 5–8 个），孙子进程**继承了 stdout/stderr
+      管道**。`subprocess.run(capture_output=True, timeout=…)` 超时时只 `kill()`
+      直接子进程，随后 `communicate()` 要读到"管道全部关闭"才返回 —— 孙子们还
+      攥着写端，于是**超时形同虚设**：本轮探针用 1.5 s 的 timeout 实等了 29.4 s
+      （假浏览器睡满）。所以这里改成：不用管道 + 超时后 taskkill 整棵树。
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        proc.kill()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:   # pragma: no cover - taskkill 都失败就别死等
+        pass
+
+
+def _shoot(exe: str, html_text: str, out: Path, *, timeout: float = 30.0) -> str:
+    """把 HTML 截成 PNG；返回浏览器 stderr 的尾巴（失败时报错用）。
+
+    ★ 必须带 timeout（2026-10-05 审查 P01）：无头浏览器在 profile 被占用 /
+      崩溃 / 卡在首次向导时会**永不退出**，而原实现 `subprocess.run(...)`
+      没有 timeout → 整条 `assets` 阶段无输出、无日志、无退出的静默挂死
+      （最坏情况：一集 300+ 镜跑了一夜没动）。实测单张正常 1.37 s，
+      30 s 已是 20 倍余量。
+
+    ★ 非零退出**不在这里抛**：先照旧查两次产物（浏览器"先退出后落盘"是
+      真实存在的），真没产物时由 `render()` 把 stderr 一起抛出来 ——
+      挂死/失败时至少能看到原因。
+    """
     out.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory() as td:
         page = Path(td) / "card.html"
@@ -279,11 +311,33 @@ def _shoot(exe: str, html_text: str, out: Path) -> None:
             f"--window-size={W},{H}",
             page.as_uri(),
         ]
-        subprocess.run(cmd, capture_output=True, text=True, errors="ignore")
+        log = Path(td) / "browser.log"
+        try:
+            # ★ 输出落**文件**而不是管道：管道会被浏览器生出来的孙子进程继承，
+            #   超时后 `communicate()` 要等它们全部退出（见 `_kill_process_tree`）。
+            with open(log, "wb") as sink:
+                proc = subprocess.Popen(cmd, stdout=sink, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL)
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    _kill_process_tree(proc)   # 连子孙一起杀，否则仍是永久挂死
+                    raise CardError(
+                        f"无头浏览器 {timeout:.0f}s 没有退出，已强制终止：{exe}\n"
+                        "  常见原因：上一次的浏览器进程还占着临时 profile，或首次启动卡在向导页。\n"
+                        "  排查：在任务管理器里结束所有 msedge / chrome 无头进程后重试；"
+                        "也可用环境变量 LVS_BROWSER 指定另一个浏览器。"
+                    ) from exc
+        except OSError as exc:      # Popen 起不来（exe 被删 / 权限 / 路径不存在）
+            raise CardError(f"启动无头浏览器失败：{exe}\n  原因：{exc}") from exc
+        stderr = ""
+        if log.is_file():
+            stderr = log.read_bytes().decode("utf-8", "ignore").strip()[-400:]
         for _ in range(10):
             if out.is_file() and out.stat().st_size > 0:
-                return
+                return stderr
             time.sleep(0.2)
+        return stderr
 
 
 def render(card: cards.Card, out_path: Path) -> Path:
@@ -296,8 +350,10 @@ def render(card: cards.Card, out_path: Path) -> Path:
     out_path = Path(out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     page = html_for(card)
+    stderr = ""
     for _ in range(2):
-        _shoot(exe, page, out_path)
+        stderr = _shoot(exe, page, out_path) or stderr
         if out_path.is_file() and out_path.stat().st_size > 0:
             return out_path
-    raise CardError(f"浏览器没有产出截图：{out_path}")
+    hint = f"\n  最后一次浏览器 stderr：{stderr}" if stderr else ""
+    raise CardError(f"浏览器没有产出截图：{out_path}{hint}")

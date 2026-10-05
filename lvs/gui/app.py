@@ -13,6 +13,7 @@ import json
 import mimetypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import (
     Flask, Response, abort, current_app, jsonify, render_template, request, send_file,
@@ -32,6 +33,9 @@ MANUSCRIPT_NAME = "manuscript.md"
 PICK_DIRNAME = "picked"
 PICK_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 MAX_PICK_BYTES = 24 * 1024 * 1024
+
+#: 认作"本机"的主机名。判跨站写请求用（见 `_block_cross_site_writes`）。
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class GuiError(LvsError, RuntimeError):
@@ -129,6 +133,34 @@ def create_app(root: Path = PROJECT_ROOT, config_path: Path | None = None) -> Fl
     app.config["LVS_CONFIG_PATH"] = Path(config_path) if config_path else find_config(None)
     registry = jobs.JobRegistry(root=Path(root), config_path=config_path)
     app.extensions["lvs_registry"] = registry
+
+    # ---- 跨站写防护（2026-10-05 审查 S03）---------------------------------
+    #
+    # ★ 为什么需要：`serve()` 的取舍是"只绑 127.0.0.1 + 不做鉴权"，但这个取舍
+    #   **不成立** —— 浏览器的跨站规则里有一类"简单请求"是不发预检的：
+    #   GUI 开着时切到任意标签页，那个页面里一个自动提交的表单就能建任务、
+    #   覆盖已有拍摄稿（毁掉几小时拆镜成果）、把来源策略重置成 auto、
+    #   停掉正在跑的生图 job。实测三个写端点跨站 POST 当**全都返 200**。
+    #
+    # ★ 判据用 `Origin`（没有则退到 `Referer`）：浏览器**一定会**给跨站写请求
+    #   带上它们；而 curl / 脚本 / 单测两个都不发 —— 那种情况放行。
+    #   这是"防浏览器跨站写"，**不是**"防本机恶意进程"，别把它说成后者。
+    @app.before_request
+    def _block_cross_site_writes():
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        source = request.headers.get("Origin") or request.headers.get("Referer") or ""
+        if not source:
+            return None                      # 非浏览器客户端（curl / 单测 / 脚本）
+        host = (urlsplit(source).hostname or "").lower()
+        self_host = (request.host or "").split(":")[0].lower()
+        # `Origin: null`（沙箱 iframe / file://）解析出的 host 是空串 → 一并拒掉
+        if host and (host in _LOCAL_HOSTS or host == self_host):
+            return None
+        return jsonify({
+            "error": "拒绝跨站写请求：本机 GUI 只服务本机页面，不对外提供接口。",
+            "origin": source,
+        }), 403
 
     @app.template_filter("ts")
     def _ts(value: Any) -> str:
@@ -269,8 +301,15 @@ def create_app(root: Path = PROJECT_ROOT, config_path: Path | None = None) -> Fl
         if d is None:
             return jsonify({"error": "not found"}), 404
         body = request.get_json(silent=True) or {}
+        # ★ 空 body **不是**"回到 auto"，是"你没说要用哪个"（2026-10-05 审查 S03：
+        #   实测跨站表单 POST 空 body → `normalize(None)` 给出 "auto"，
+        #   于是"什么都没传"成了一个**有效的写操作**，能把用户的 local 重置掉）。
+        #   区分"显式给了 auto"和"根本没给"，正是 sources.resolve 的语义。
+        raw_mode = body.get("mode", request.form.get("mode"))
+        if raw_mode is None:
+            return jsonify({"error": "缺少 mode（想显式回自动就传 auto）"}), 400
         try:
-            mode = sources.normalize(body.get("mode"))
+            mode = sources.normalize(raw_mode)
         except sources.SourceModeError as exc:
             return jsonify({"error": str(exc)}), 400
 

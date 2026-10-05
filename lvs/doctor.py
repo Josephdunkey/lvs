@@ -135,7 +135,11 @@ def check_llm(config: Config) -> CheckResult:
         provider = config.get("app.llm_provider", "openai")
         model = config.get("app.openai_model_name", "")
         base = config.get("app.openai_base_url", "")
-        return CheckResult("LLM key", PASS, f"已配置（{provider} / {model} / {base}）")
+        # ★ 说清楚"它是从哪来的"（2026-10-05 审查 S07）：否则用户改了
+        #   config.toml 发现不生效，会去查一个根本不存在的 bug。
+        #   只说**键名**、不说值 —— 体检输出会进日志 / 截图 / issue。
+        where = "（来自环境变量 LVS_OPENAI_API_KEY）" if "app.openai_api_key" in config.env_keys else ""
+        return CheckResult("LLM key", PASS, f"已配置{where}（{provider} / {model} / {base}）")
     return CheckResult(
         "LLM key", MISSING, "`app.openai_api_key` 未填写",
         hint="在 config.toml 的 [app] 段填写 openai_api_key（拆镜阶段必需）",
@@ -144,7 +148,8 @@ def check_llm(config: Config) -> CheckResult:
 
 def check_pexels(config: Config) -> CheckResult:
     if config.has("pexels.api_key"):
-        return CheckResult("Pexels key", PASS, "已配置")
+        where = "（来自环境变量 LVS_PEXELS_API_KEY）" if "pexels.api_key" in config.env_keys else ""
+        return CheckResult("Pexels key", PASS, f"已配置{where}")
     return CheckResult(
         "Pexels key", WARN, "未配置（仅影响 source=pexels 的分镜）",
         hint="在 config.toml 的 [pexels] 段填写 api_key",

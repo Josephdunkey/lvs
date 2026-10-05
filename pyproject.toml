@@ -10,16 +10,42 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "tomli>=2.0; python_version < '3.11'",
+    "tomli>=2.0,<3; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
-# 一期：配音 + 检索 + 素材库
-tts = ["edge-tts>=6.1"]
-http = ["requests>=2.31"]
-# 二期：本地 TTS 字幕强制对齐
-align = ["faster-whisper>=1.0"]
-dev = ["pytest>=7.4"]
+# ---- 按"能干哪件事"分组：装哪个 extras 决定哪条路能走 --------------------------
+#
+# ★ 为什么必须补全（2026-10-05 审查 E03）：原先 dependencies 只有 `tomli`，
+#   而代码里真有 7 个第三方 import（Pillow / numpy / flask / tomlkit / requests /
+#   imageio-ffmpeg / opencv-python）。干净环境 `pip install -e .` 之后
+#   `lvs graphic` / `lvs gui` / `lvs publish` 全是 ImportError，
+#   而且报的是"内部错误"，不是"请先装 X"—— 新人 30 分钟出不了活。
+#
+# ★ 为什么每行都写上界（同批 #9）：上界是"别在半夜自动跳大版本"的保险丝。
+#   上游大版本必须先在本机跑一遍全量回归再抬。这不是"锁死版本"——
+#   下界仍是能力下限，上界只挡大版本。抬上界 = 改这一行 + 跑一次全量。
+tts = ["edge-tts>=6.1,<8"]
+http = ["requests>=2.31,<3"]
+# 本地 TTS 字幕强制对齐（重依赖，故意不进 all）
+align = ["faster-whisper>=1.0,<2"]
+# 图形 / 图像：`lvs graphic`（图文卡）、`lvs publish`（封面）、`lvs cast`（审阅表）、
+# `lvs qc`、GUI 缩略图都要 Pillow —— 实测 6 个模块 import 它，是**事实上的核心依赖**。
+image = ["Pillow>=10.0,<12", "numpy>=1.24,<3"]
+# 本地生图 / 合成的 ffmpeg 退路（系统没装 ffmpeg 时用 imageio 自带的那份）
+comfy = ["imageio-ffmpeg>=0.4,<1"]
+# 本地图形界面
+gui = ["flask>=3.0,<4", "tomlkit>=0.12,<1"]
+# 质检（空镜长人 / 人物镜没脸）
+qc = ["opencv-python>=4.9,<5", "numpy>=1.24,<3", "Pillow>=10.0,<12"]
+# 一人开发的实际用法：全装（不含 align —— faster-whisper 是 GB 级重依赖，
+# 要精确对齐字幕再单独装 `.[align]`）
+all = [
+    "Pillow>=10.0,<12", "numpy>=1.24,<3", "imageio-ffmpeg>=0.4,<1",
+    "flask>=3.0,<4", "tomlkit>=0.12,<1", "opencv-python>=4.9,<5",
+    "requests>=2.31,<3", "edge-tts>=6.1,<8",
+]
+dev = ["pytest>=7.4,<9"]
 
 [project.scripts]
 lvs = "lvs.cli:main"

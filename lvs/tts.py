@@ -692,15 +692,28 @@ def concat_track(ws: Workspace, shots: list[dict[str, Any]], gap: float) -> Path
 # ---- 命令入口 --------------------------------------------------------------
 
 
-def _existing_boundaries(ws: Workspace, sid: int) -> list[Boundary] | None:
-    path = ws.path("audio", f"shot-{sid:03d}.json")
-    if not path.is_file():
+def _meta_boundaries(meta: dict[str, Any]) -> list[Boundary] | None:
+    """从**已经读到手的** meta 里取词边界。`None` = 这份记录没有可用边界。
+
+    ★ 为什么不再单独读一遍 json（2026-10-05 审查 P02）：原 `_existing_boundaries`
+      与 `_audio_meta` 读的是**同一个文件**，调用方为了拿两样东西把它读了两遍 ——
+      一次 `lvs voice`（363 镜）就是 726 次读盘。边界本来就在刚读到的 dict 里。
+
+    ★ 坏记录（缺字段 / 类型不对）→ 当作"没有边界"，下游走强制对齐或按字数估算；
+      **不让整轮 voice 死在复用分支**（同批修掉 B13：原先裸 `b["offset"]`
+      遇到坏 json 会直接 KeyError，整轮配音终止）。
+    """
+    raw = meta.get("boundaries")
+    if not isinstance(raw, list) or not raw:
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return [Boundary(b["offset"], b["duration"], b["text"]) for b in data.get("boundaries", [])]
+    out: list[Boundary] = []
+    for item in raw:
+        try:
+            out.append(Boundary(float(item["offset"]), float(item["duration"]),
+                                str(item["text"])))
+        except (KeyError, TypeError, ValueError):
+            return None
+    return out
 
 
 def _text_sha1(text: str) -> str:
@@ -717,28 +730,108 @@ def _audio_meta(ws: Workspace, sid: int) -> dict[str, Any] | None:
         return None
 
 
-def _audio_reusable(ws: Workspace, sid: int, out: Path, voice: str, narration: str) -> bool:
-    """已有音频能否复用。
+def _params_key(backend: TTSBackend, voice: str) -> str:
+    """把"决定这段音频长什么样"的**合成参数**压成一个短串。
+
+    与 `_text_sha1` 是两件事：那个管"文本变没变"，这个管"参数变没变"。
+
+    ★ 为什么要它（2026-10-05 审查 #3）：原 `_audio_reusable` 只比 `voice` 与
+      `text_sha1`。改 `tts.rate` / `tts.pitch` / `tts.instruct` / 换参考音频之后，
+      旧音频照样被复用 —— 讲稿没改、音色没改，但**声音已经该变了**，却一个字都不重合成。
+
+    ★ 只收集后端上**真的存在**的参数：三种后端的参数集不同，写死一份字段表必然漂移。
+      故意**不含** `base_url`（换服务端口不代表声音会变，把它算进去会让"挪个端口"
+      触发全量重合成 = 白烧几十分钟 GPU）。
+    """
+    parts: list[str] = [getattr(backend, "name", "")]
+    for attr in ("rate", "volume", "pitch", "boundary",
+                 "instruct", "mode", "language", "xvec_only"):
+        if hasattr(backend, attr):
+            parts.append(f"{attr}={getattr(backend, attr)!r}")
+    parts.append(f"voice={voice}")
+    # 参考音频：**内容**换了也要重做 —— 同名文件被替换过时，只看路径是看不出来的。
+    ref = str(getattr(backend, "ref_audio", "") or "")
+    if ref:
+        try:
+            st = Path(ref).stat()
+            parts.append(f"ref_stat={st.st_size}:{st.st_mtime_ns}")
+        except OSError:
+            parts.append("ref_stat=missing")
+    return artifact.signature(*parts)
+
+
+@dataclass(frozen=True)
+class Reusable:
+    """一次复用判定的**全部**结果 —— 调用方要的东西一次给全，别再各测一遍。"""
+
+    duration: float
+    boundaries: list[Boundary] | None = None
+    #: 这份记录是**旧格式**（没有参数指纹）：复用，但无法证明参数没变。
+    params_unverified: bool = False
+
+
+def _legacy_records_still_valid(prev_key: str, params_key: str) -> bool:
+    """**没有参数指纹的旧记录**还能不能复用。
+
+    ★ 这条规则补的是 #3 的最后一个洞：旧 json 没有 `params_sha1`，严格说
+      "无从证明参数没变"，一律重做会让所有历史任务凭空全量重合成（用户没要求的
+      几十分钟 GPU）。所以默认复用 —— **但**如果 manifest 里留着上一轮的
+      `voice_key`、且它与本次不同，就**证明**了参数确实改过（那些记录必然生成于
+      更早的参数），这时必须重做：否则"改 rate 会重合成"这个修法对历史任务
+      完全不起作用（改一次 rate，旧音频被白复用一轮，指纹永远补不上）。
+    """
+    return (not prev_key) or (prev_key == params_key)
+
+
+def _audio_reusable(
+    ws: Workspace, sid: int, out: Path, voice: str, narration: str, params_key: str,
+    *, allow_legacy: bool = True,
+) -> Reusable | None:
+    """已有音频能否复用。可复用返回 `Reusable`（时长 + 词边界），否则 `None`。
+
+    ★ 为什么返回对象而不是 `bool`（2026-10-05 审查 P02）：原实现返回 True 之后，
+      调用方在 `run_command` 里又 `ff_duration(out)` 测了一遍时长、又读了一遍
+      **同一个 json**。363 镜 = 白起 363 个 ffprobe 进程（实测 0.21–0.59 s/次）
+      + 白读 363 次盘。**同一个判断不做两遍**。
 
     只看"文件存在"是不够的（票据 47）：`--force` 重合成**失败时不会删掉旧文件**，
     下一轮就把它当成功产物跳过 —— 旧音色、旧文本的音频于是留在片子里。
     实测第一章换音色后 4 镜（035/042/044/046）残留上一版的 Yunjian 音频，
     其中一镜的旁白已从 11 字改到 168 字，时长差 3.6s vs 44s 却毫无报错。
 
-    要求：① 音色与本次一致；② 有文本指纹时文本一致；③ 没有 json 记录的一律重做
-    （无从校验，宁可多合一次）。
+    要求：① 音色与本次一致；② 有文本指纹时文本一致；③ 有参数指纹时参数一致；
+    ④ 没有 json 记录的一律重做（无从校验，宁可多合一次）。
     """
-    if not (out.is_file() and out.stat().st_size > 0 and ff_duration(out)):
-        return False
+    if not (out.is_file() and out.stat().st_size > 0):
+        return None
+    duration = ff_duration(out)
+    if not duration:
+        return None
     meta = _audio_meta(ws, sid)
     if meta is None:
-        return False
+        return None
     if str(meta.get("voice") or "") != str(voice):
-        return False
+        return None
     digest = meta.get("text_sha1")
     if digest and digest != _text_sha1(narration):
-        return False
-    return True
+        return None
+    recorded = meta.get("params_sha1")
+    if recorded is None:
+        # 旧格式记录（2026-10-05 之前写的 json 没有 params_sha1）：没有指纹。默认复用
+        # （严格重做 = 让所有历史任务一次性全量重合成，代价不是用户要的），由调用方
+        # 如实提示 + 需要时 `--force`。但调用方若能证明参数**确实**改过
+        # （manifest 的上一轮 voice_key 与本次不同）→ `allow_legacy=False` → 重做。
+        if not allow_legacy:
+            return None
+    elif str(recorded) != params_key:
+        return None
+    # ★ 旧格式记录（2026-10-05 之前写的 json 没有 params_sha1）：**照样复用**。
+    #   严格按"宁可多合一次"应当重做，但那会让所有历史任务一次性全量重合成
+    #   （363 镜的本地 TTS = 几十分钟），属于**用户没要求的代价**。所以这里
+    #   复用 + 让调用方**如实提示**有多少镜是"没法证明参数没变"的，
+    #   要全部重做由用户显式 `--force`。
+    return Reusable(float(duration), _meta_boundaries(meta),
+                    params_unverified=recorded is None)
 
 
 def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
@@ -772,6 +865,14 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
     gap = float(config.get("voice.gap", 0.3))
     max_chars = int(config.get("voice.subtitle_max_chars", 18))
     ext = "mp3" if backend.name == "edge" else "wav"
+    # 本次的合成参数指纹：改写 tts.rate / pitch / instruct / 换参考音频 → 旧音频全部作废。
+    # 收尾时把它写进 manifest（`voice_key`）与每镜的音频记录（`params_sha1`）。
+    params_key = _params_key(backend, voice)
+    # 上一轮整轨是用哪套参数合成的（旧版本写的 manifest 没这个字段 → 空串）。
+    # 它只用来回答一件事：那些**没有参数指纹**的旧音频记录还能不能复用
+    # （见 `_legacy_records_still_valid`）。
+    prev_key = str(((ws.manifest.get("stages") or {}).get("voice") or {}).get("voice_key") or "")
+    legacy_ok = _legacy_records_still_valid(prev_key, params_key)
 
     # 只有**吃显存**的后端才走 GPU 守卫：
     #   `edge`   联网合成，不占显存
@@ -794,6 +895,7 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
     boundaries_map: dict[int, list[Boundary]] = {}
     failures: list[tuple[int, str]] = []
     done = skipped = 0
+    legacy_params = 0   # 旧格式音频记录（没有参数指纹）的镜数，收尾时如实提示
     # 连续失败熔断：TTS 服务掉线会**逐镜失败到底**，到阈值就停（见 `lvs/breaker.py`）。
     breaker = breaker_mod.Breaker(breaker_mod.limit_from(config))
     tripped = False
@@ -818,15 +920,18 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
         sid = int(shot["id"])
         processed += 1
         out = ws.path("audio", f"shot-{sid:03d}.{ext}")
-        if not force and _audio_reusable(ws, sid, out, voice, shot["narration"]):
-            shot["audio_path"] = str(out)
-            shot["audio_duration"] = ff_duration(out)
-            bounds = _existing_boundaries(ws, sid)
-            if bounds is not None:
-                boundaries_map[sid] = bounds
-            skipped += 1
-            _progress()
-            continue
+        if not force:
+            reuse = _audio_reusable(ws, sid, out, voice, shot["narration"], params_key,
+                                    allow_legacy=legacy_ok)
+            if reuse is not None:
+                shot["audio_path"] = str(out)
+                shot["audio_duration"] = reuse.duration
+                if reuse.boundaries is not None:
+                    boundaries_map[sid] = reuse.boundaries
+                legacy_params += int(reuse.params_unverified)
+                skipped += 1
+                _progress()
+                continue
         try:
             res = backend.synthesize(shot["narration"], out, voice)
         except TTSError as exc:
@@ -867,6 +972,9 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
                     "voice": voice,
                     "duration": res.duration,
                     "text_sha1": _text_sha1(shot["narration"]),
+                    # 合成参数指纹：下一轮据此判"参数改没改"（见 _params_key）。
+                    # 没有它的话，改 rate / 换参考音频后旧音频会被静默复用。
+                    "params_sha1": params_key,
                     "boundaries": [{"offset": b.offset, "duration": b.duration, "text": b.text} for b in res.boundaries],
                 },
                 ensure_ascii=False, indent=2,
@@ -941,6 +1049,9 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
         "voice",
         outputs=outputs,
         status=stage_status(len(failures)),
+        # 本次的合成参数指纹落进 manifest —— 事后能回答"这条整轨是哪套参数合成的"，
+        # 比回头翻 config 的历史可靠。
+        voice_key=params_key,
         # `total` 必须给：结果信封的 `counts` 读它（少了它，agent 看到
         # "done=3 total=0" 这种自相矛盾的数，而 `assets` 一直都给了）。
         total=len(shots), done=done, skipped=skipped, failed=len(failures),
@@ -948,6 +1059,13 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
 
     total_dur = ok_shots[-1]["end"]
     print(f"配音完成：合成 {done}，跳过 {skipped}，失败 {len(failures)}")
+    if legacy_params:
+        print(
+            f"  ⚠ 其中 {legacy_params} 镜的音频记录是**旧格式**（没有参数指纹），"
+            f"无法逐镜证明参数没变（{'上一轮参数与本次一致' if prev_key else '上一轮没留下参数指纹'}），"
+            "已按原规则复用。\n"
+            "    要全部按当前参数重做：加 --force（会重新合成所有命中缓存的镜头）。"
+        )
     if tripped:
         print(
             f"  ⚠ 已熔断：连续失败 {breaker.consecutive} 次后停止，"

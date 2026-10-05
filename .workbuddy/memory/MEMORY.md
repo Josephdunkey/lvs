@@ -74,6 +74,13 @@ L1 文字锚定 ✅｜**L2 参考图 img2img ✅ 已真机验证**｜L3 LoRA ❌
   掩盖了「ffmpeg 返回 0 却零产物」这条真故障（#2 原子化时被它绊到，3 例假绿）。
 - ⚠ **`Out-File -Encoding ascii` 会把 here-string 里的中文变成问号**（写补丁脚本中招一次）：
   改用 `-Encoding utf8`，并在脚本里自检「有没有中文被写成问号」；补丁脚本要幂等或先 `git checkout --`。
+- ⚠ **`Out-File -Encoding utf8` 在 PS 5.1 会写 BOM**：往已有文件**中间**插内容时，
+  BOM 就变成正文里的 `U+FEFF`（`Select-String -Pattern '^## '` 会直接漏掉那一行）。
+  写“要给 git / 别的程序读”的文件用
+  `[System.IO.File]::WriteAllText($p,$s,(New-Object System.Text.UTF8Encoding($false)))`，
+  或落地后 `replace(chr(0xFEFF), '')` 清一遍。
+- ⚠ **`-q` 叠在 `addopts="-q --tb=line"` 上 = `-qq`，末尾「N passed in Xs」汇总行会消失**：
+  看到 `[100%]` 就没了，别以为跑挂了。要计数/计时用 `-o "addopts=--tb=line"` 覆盖；只判绿看退出码。
 
 ## 省 token 纪律（2026-10-04 复盘：一次返工烧掉大半天 token，7 条防复发）
 1. ★★ **全量 pytest 只发一轮、用对解释器**：`.venv/Scripts/python.exe`（带 ffmpeg 等依赖，
@@ -90,6 +97,26 @@ L1 文字锚定 ✅｜**L2 参考图 img2img ✅ 已真机验证**｜L3 LoRA ❌
 6. ★ **改动只做最小必要面**：修 parse 只动块语义一处 + 1 个回归测试；shots 手术只删不重排；
    每步断言过了才走下一步，避免回滚重做。
 7. ★ **门禁 note 一次写全实测值**（删几镜/时长/残留计数），别事后发现写错再重批（多一轮调用）。
+
+## 密钥与环境（2026-10-05 起）
+
+- **密钥可以只活在环境变量里**：`LVS_OPENAI_API_KEY` → `app.openai_api_key`、`LVS_PEXELS_API_KEY` → `pexels.api_key`。**环境变量优先于文件**（`config._ENV_KEYS`），空串不生效。`lvs doctor` 会说"来自环境变量"（只说键名，**绝不打印值**）。
+- **设置页的密钥框永远是空的**：回显值是掩码（`sk-1…cdef`），前端不把它填进 `value=`，后端 `configio.looks_masked()` 见到掩码就**拒绝写入**。看到掩码被当成新密钥提交 = 真 key 被不可逆覆盖（原值无副本）。改密钥必须填**完整新值**；留空 = 不改。
+- **GUI 写请求有跨站防护**：`Origin`（无则 `Referer`）不是本机 → 403。curl / 脚本（没有这两个头）照常放行 —— 这是"防浏览器跨站"，**不是**鉴权。`Origin: null` 也拦。
+- **只读标志必须真只读**：`shots --peek/--index` 走 `cli._shots_readonly`（因为 `shots` 在 `_ENVELOPE_COMMANDS` 里，不绕过就会 `note_stage_end` 写阶段状态）。
+
+## 续跑只看这些（省 token，2026-10-05 起）
+
+- `lvs status --brief`（6 行 / 4 任务）→ 再决定要不要看别的。
+- 看分镜：`lvs shots --index`（516 KB → 18.6 KB）/ `--peek <id>`（约 300 token）。
+- 读源码/文档：`lvs map show <file> <起> <止>` / `lvs map grep <正则>`。
+- **别**：整读 `shots.json`（475 KB）、整读 `docs/` 审查报告、造 `*_numbered.txt`。
+
+## 子进程纪律（2026-10-05 实测，`lvs/cardhtml.py`）
+
+- `subprocess.run(capture_output=True, timeout=…)` **超时可能形同虚设**：子进程的**子孙**会继承 stdout 管道，`communicate()` 要等它们全退出（实测 1.5 s 的 timeout 等了 **29.4 s**）。
+- 正解：输出落**文件**（不用管道）+ 超时后 `taskkill /F /T /PID`（Windows）杀整棵树，再 `proc.wait(timeout=10)` 兜底。判据：`tests/test_cardhtml_shoot.py`。
+- 通用推论：**任何"起子进程 + 超时"的地方都要问一句"它会不会生孩子"**。
 
 ## 投稿物料（2026-10-04 起，`lvs publish`）
 - ★ 成片后**一条命令**出投稿物料：`lvs publish --task X --config <cfg>` →

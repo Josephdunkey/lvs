@@ -15,7 +15,7 @@ from lvs.errors import UsageError
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 try:  # Python 3.11+
     import tomllib
@@ -126,6 +126,51 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: 密钥的**环境变量通道**（十二要素）：有它，密钥就不必落在磁盘上。
+#:
+#: 名字是 `LVS_<段>_<键>`，与配置项一一对应。**只放真密钥**，不放普通配置 ——
+#: 环境的优先级高于文件，能覆盖任意键；一旦把普通配置也放进来，
+#: "配置文件里写的值不生效"会变成极难查的怪事。
+_ENV_KEYS: dict[str, str] = {
+    "LVS_OPENAI_API_KEY": "app.openai_api_key",
+    "LVS_PEXELS_API_KEY": "pexels.api_key",
+}
+
+
+def _apply_env_overrides(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """把 `LVS_*` 环境变量叠加到配置之上（**环境变量优先于文件**）。
+
+    返回 `(新配置, 被覆盖的键名列表)`。键名只给 `doctor` / 界面说"这个键是环境给的"，
+    **绝不打印值**（调用方也别把值塞进任何输出）。
+
+    ★ 为什么需要（2026-10-05 审查 S07）：原先"要跑拆镜就必须把 key 写进
+      `config.toml`"，于是轮换只能再写一份文件，磁盘上的明文副本越滚越多
+      （实测同一把 key 有 5 份副本）；CI / 容器里也没法用 secret 注入。
+
+    ★ 实现是**合并 overlay**、不改 `data` 本身：配置可能有 `[base]` 继承链，
+      就地改嵌套字典会顺手改到父配置对象上（同一个 config 被两处共用）。
+    """
+    overlay: dict[str, Any] = {}
+    hit: list[str] = []
+    for env_name, dotted in _ENV_KEYS.items():
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        *sections, leaf = dotted.split(".")
+        node = overlay
+        for section in sections:
+            nxt = node.get(section)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                node[section] = nxt
+            node = nxt
+        node[leaf] = raw
+        hit.append(dotted)
+    if not hit:
+        return data, []
+    return _deep_merge(data, overlay), hit
+
+
 def _base_target(value: Any, *, here: Path) -> Path | None:
     """解析 `[base].config`。先按**项目 config 所在目录**找，再按仓库根找。
 
@@ -146,9 +191,18 @@ def _base_target(value: Any, *, here: Path) -> Path | None:
 class Config:
     """已加载的配置。字段按需 `get` / `require`，不在导入期强制校验。"""
 
-    def __init__(self, data: dict[str, Any], path: Path | None) -> None:
+    def __init__(
+        self,
+        data: dict[str, Any],
+        path: Path | None,
+        *,
+        env_keys: Iterable[str] = (),
+    ) -> None:
         self._data = data
         self.path = path
+        #: 哪些键的值**来自环境变量**（`doctor` 用来说清"该改环境变量还是改文件"）。
+        #: 只存键名，不存值 —— 这个对象会被界面 / JSON / 日志一路带着走。
+        self.env_keys: frozenset[str] = frozenset(env_keys)
 
     def as_dict(self) -> dict[str, Any]:
         """只读快照，供界面摊平展示用（改配置请直接改文件）。"""
@@ -193,7 +247,8 @@ class Config:
                 data = {k: v for k, v in data.items() if k != _BASE_KEY}
         elif _BASE_KEY in data:
             data = {k: v for k, v in data.items() if k != _BASE_KEY}
-        return cls(data, path)
+        data, env_keys = _apply_env_overrides(data)
+        return cls(data, path, env_keys=env_keys)
 
     @classmethod
     def empty(cls) -> "Config":

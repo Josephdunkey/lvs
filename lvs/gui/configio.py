@@ -69,6 +69,25 @@ def mask(value: Any) -> str:
     return "已设置"
 
 
+_MASK_CHAR = "…"           # 必须与 mask() 用的那个字符一致
+_SET_SENTINEL = "已设置"    # mask() 对短值的产物
+
+
+def looks_masked(value: Any) -> bool:
+    """这个值是不是 `read_editable()` 自己吐出去的掩码？
+
+    ★ 为什么必须在**后端**挡（2026-10-05 审查 S01）：设置页把掩码填进了
+      `value=`，用户点一次「保存」就把 `sk-1…cdef` 当真值写回 —— 而它是一串
+      **永远不可能通过校验**的字符串，等于把真 key 静默删掉，且不可恢复
+      （原值不在任何地方留副本）。触发概率极高：只是想改一下 `library.dirs`
+      也会踩到。前端只要哪天忘了判空（或浏览器自动填充、或有人直接 curl 打
+      `/api/config`），掩码就会被当成"用户填的新密钥"。后端是最后一道，
+      也是唯一**不依赖前端正确性**的那道。
+    """
+    text = str(value or "")
+    return _MASK_CHAR in text or text == _SET_SENTINEL
+
+
 _BY_KEY = {f.key: f for f in EDITABLE}
 
 
@@ -140,13 +159,17 @@ def read_editable(path: Path | str) -> dict[str, dict[str, Any]]:
             node = node.get(section, {}) if isinstance(node, dict) else {}
         leaf = field.key.split(".")[-1]
         value = node.get(leaf) if isinstance(node, dict) else None
+        shown = mask(value) if field.secret else value
         out[field.key] = {
             "label": field.label,
             "kind": field.kind,
             "choices": list(field.choices),
             "secret": field.secret,
             "hint": field.hint,
-            "value": mask(value) if field.secret else value,
+            "value": shown,
+            # ★ "这个键有值、但回显的是掩码"。前端据此**不把掩码填进输入框**
+            #   （S01 的另一半：后端挡写回，前端从源头不产生掩码提交）。
+            "masked": bool(field.secret and looks_masked(shown)),
         }
     return out
 
@@ -175,6 +198,12 @@ def apply(path: Path | str, changes: dict[str, Any]) -> dict[str, dict[str, Any]
             raise ConfigIOError(str(exc)) from exc
 
     for key, value in coerced.items():
+        # ★ 掩码在**这里**被挡住（最后一道，也是不依赖前端的那道）。见 looks_masked()。
+        if _BY_KEY[key].secret and looks_masked(value):
+            raise ConfigIOError(
+                f"拒绝写入 `{key}`：提交的是设置页回显的**掩码**（{value!r}），不是真密钥。\n"
+                "  要换密钥请填完整的新值；不想改就别动那个输入框（留空 = 不改）。"
+            )
         _set(doc, key, value)
 
     # 原子写：先写临时文件再替换，避免写到一半断电坏文件

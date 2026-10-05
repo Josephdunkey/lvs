@@ -62,6 +62,24 @@ while 退出码 == 3:                       # 3 = 等人审
 | `styles` | ✅ | 干净 JSON |
 | `board` | ✅ | **干净 JSON**（进度 + `next_stage`） |
 | `doctor` | ✅ | **干净 JSON**（体检项数组） |
+| `status` | ✅ | **干净 JSON**（一行一任务：门禁开闭 / 产物 / `next`） |
+| `map` | ❌ | 无 `--json`，**故意的** —— 输出就是给人/给 agent 读的行号锚定文本 |
+| `publish` | ❌ | 暂无 `--json`；产物是**文件**（封面 PNG + `bilibili.md` / `douyin.md` / `meta.json`） |
+| `cast` `library` `image` `clean` `check` `migrate` | ❌ | 暂无（见 §九） |
+
+#### 3.1.1 ★ 省 token 的**只读**入口（2026-10-05 补，续跑先看这一节）
+
+| 想干什么 | 用哪个 | 代价实测 |
+|---|---|---|
+| 续跑前"到哪了" | `lvs status --brief` | 6 行 / 4 任务；单任务 5.9 s |
+| 看分镜全表 | `lvs shots --index` | 516 KB → 363 行 / **18.6 KB** |
+| 看某一镜 | `lvs shots --peek <id>` | **316 字符 / 5 行**（`--full` 才打提示词全文） |
+| 读源码/文档 | `lvs map show 文件 起 止` / `lvs map grep 正则` | 按区间取，别整文件读 |
+| 门禁开闭 | `lvs gate --json` | 见 §四 |
+
+> ★ 这些"只读"标志**必须真的只读**：`shots` 在 CLI 的 `_ENVELOPE_COMMANDS` 里，
+> 早先 `--peek/--index` 会顺手 `note_stage_end`（只读命令写阶段状态）——
+> 已抽 `cli._shots_readonly` 绕过。**加只读标志时照这个做**。
 
 > ⚠️ **`board` / `doctor` 的 `--json` 在 2026-10-03 之前根本不存在** ——
 > `doctor.run(as_json=…)` 早就实现了，但 CLI 从来没传过。
@@ -189,7 +207,13 @@ $C = "config.雨月物语.toml"          # ★ 一本书一份 config，见下
 
 ---
 
-## 八、agent 最该知道的五件事
+## 八、agent 最该知道的六件事
+
+**0. 续跑三件套（2026-10-05 新增；全是"省 token"的入口，先看 §3.1.1）**
+
+- `lvs status --brief` —— **续跑第一步跑它**，别一上来读 `shots.json`。
+- `lvs shots --index` / `--peek <id>` —— 想"看分镜"时用（516 KB → 18.6 KB）。
+- `lvs map show/grep` —— 按行号区间读源码/文档，别再生成 `*_numbered.txt` 那类全量副本。
 
 1. **`lvs run` = 跑到下一道门**，不是跑完。重跑即续跑。
 2. **一本书一份 config**。`config.toml` 的 `[paths].lib` 指向哪本书是**固定**的，
@@ -199,6 +223,10 @@ $C = "config.雨月物语.toml"          # ★ 一本书一份 config，见下
 4. **`--skip-gates` 等于放弃人审** —— 只在"急着看个大概"时用，不能当默认。
 5. **GPU 互斥**：`assets`（生图）与 `voice`（本地 TTS）不能同时开
    （8GB 显存装不下）。`guard` 会拦并说明关哪个。
+6. **密钥可以只活在环境变量里**：`LVS_OPENAI_API_KEY` / `LVS_PEXELS_API_KEY`
+   （环境变量**优先于** `config.toml`，写进文件会留明文副本）。
+   `lvs doctor` 会说明"来自环境变量"。设置页的密钥输入框**故意永远是空的** ——
+   回显的掩码一旦被提交回去，后端会直接**拒绝写入**（那是不可逆的覆盖）。
 
 ---
 
