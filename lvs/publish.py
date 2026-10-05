@@ -185,8 +185,50 @@ def _first_sentences(texts: list[str], limit: int = 4) -> list[str]:
     return out
 
 
-def description(parse_data: dict[str, Any], config: Config, lines: list[str]) -> str:
-    """B站简介：开场白 + 作品介绍 + 系列钩子 + 版权与画面声明。"""
+_EPISODE_RE = re.compile(r"第\s*([0-9一二三四五六七八九十]+)\s*期")
+_CN_DIGIT = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_number(raw: str) -> int | None:
+    """`三` / `十三` / `二十三` → 3 / 13 / 23；认不出来（如 `廿`）返回 None。"""
+    if raw.isdigit():
+        return int(raw)
+    if not raw or any(ch not in _CN_DIGIT and ch != "十" for ch in raw):
+        return None
+    if "十" not in raw:
+        return _CN_DIGIT.get(raw) if len(raw) == 1 else None
+    head, _, tail = raw.partition("十")
+    tens = _CN_DIGIT.get(head, 1) if head else 1
+    units = _CN_DIGIT.get(tail, 0) if tail else 0
+    return tens * 10 + units
+
+
+def episode_hint(parse_data: dict[str, Any]) -> int | None:
+    """从拍摄稿标题里的「第 N 期」反解期号（比 config 里那个手改的数字可靠）。
+
+    ★ 实测坑（2026-10-05）：`config.雨月物语.toml` 的 `episode` 是**跟书绑定**的，
+      但期号跟**本期**绑定 —— 给 005 把它改成 5 之后，回头重出 003 的物料，
+      简介就写成了"本期是……第 5 期"。而拍摄稿标题
+      `003-雨月物语-夜宿荒宅 拍摄稿 · 《雨月物语》第三期「夜宿荒宅」`
+      自带真值，优先用它；config 只作兜底。
+    """
+    texts = [str(parse_data.get("title") or "")]
+    texts += [v for v in (parse_data.get("meta") or {}).values() if isinstance(v, str)]
+    for text in texts:
+        match = _EPISODE_RE.search(text)
+        if match:
+            num = _cn_number(match.group(1))
+            if num:
+                return num
+    return None
+
+
+def description(parse_data: dict[str, Any], config: Config, lines: list[str],
+                *, episode: int | None = None) -> str:
+    """B站简介：开场白 + 作品介绍 + 系列钩子 + 版权与画面声明。
+
+    `episode` 由 `build_meta` 解好再传（拍摄稿优先 / config 兜底），这里不再自己读 config。
+    """
     cold = [str(t) for t in ((parse_data.get("cold_open") or {}).get("text") or [])]
     if not cold:
         cold = [str((parse_data.get("segments") or [{}])[0].get("narration") or "")]
@@ -199,7 +241,8 @@ def description(parse_data: dict[str, Any], config: Config, lines: list[str]) ->
     if intro:
         blocks.append(intro)
 
-    episode = config.get("publish.episode")
+    if episode is None:
+        episode = config.get("publish.episode")
     series = str(config.get("publish.series", "") or "").strip()
     hook_bits: list[str] = []
     if series:
@@ -374,12 +417,153 @@ def _scrim(size: tuple[int, int], orientation: str, strength: float = 0.82,
     return Image.new("RGB", (w, h), (0, 0, 0)), alpha
 
 
+#: 行首禁则：这些标点不许出现在一行的开头（中文排版基本规则）。
+#: 实测痛点：`《雨月物语》夜宿荒宅` 折行后 `》` 掉到最后一行行首 —— 观感很业余。
+_NO_LINE_START = "，。、；：？！）》」』】”’…·"
+
+
+def _fix_orphan_punct(rows: list[str]) -> list[str]:
+    """把行首的收尾标点并回上一行（避头尾）。宁可上一行略超宽，也不让标点单吊。"""
+    out = list(rows)
+    for i in range(1, len(out)):
+        while out[i] and out[i][0] in _NO_LINE_START:
+            out[i - 1] += out[i][0]
+            out[i] = out[i][1:]
+    return [row for row in out if row]
+
+
+
+def _wrap_balanced(draw: Any, line: str, font: Any, max_w: float) -> list[str]:  # noqa: ANN001
+    """折行后再把"孤字行 / 太短的末行"摊平。
+
+    ★ 实测痛点（2026-10-05 抖音竖版）：`他七年没回家` 被贪心折行切成
+      `他七年没回` + `家` —— 末行只有一个字，封面立刻显得业余。
+      对策：末行短到不足最长行的 40% 时，按**字数**把整句均分重切
+      （中文近似等宽，均分观感最好）；均分后任一行超宽 → 退回贪心结果，
+      保证"只敢优化、绝不画坏"。
+    """
+    rows = list(graphic.wrap(draw, line, font, max_w) or [line])
+    if len(rows) < 2:
+        return rows
+    widest = max(len(r) for r in rows)
+    if len(rows[-1]) * 2 >= widest:
+        return rows
+    n, total = len(rows), len(line)
+    even = [line[i * total // n:(i + 1) * total // n] for i in range(n)]
+    if all(even) and all(draw.textlength(r, font=font) <= max_w for r in even):
+        return even
+    return rows
+
+
+#: 封面字默认配色：**深墨字 + 奶白描边**（本项目的房规 —— 001 白峰 / 002 菊花之约
+#: 两张定版都是这个方向）。反过来（浅字 + 深描边）在浅色或花样底图上会化掉：
+#: 2026-10-05 那批 `*_final` 就是反着来 + 字太小，被用户打回（判据在 tests/test_publish.py）。
+_COVER_INK = (18, 24, 44)
+_COVER_PAPER = (250, 248, 240)
+
+
+#: 封面**专用**字体偏好：重黑体优先。
+#: ★ 为什么不能用 `graphic.font_path()`（2026-10-05 实测）：那条链第一个命中是
+#:   `NotoSerifSC-VF.ttf` —— **衬线可变字体**，默认字重偏细，配上粗描边就成了
+#:   "空心描边字"（用户："那几张图不好看"）。封面要的是砸在脸上的粗黑，
+#:   数据卡片继续用那一套，不动。
+_COVER_FONT_CANDIDATES = (
+    r"C:\Windows\Fonts\NotoSansSC-VF.ttf",   # 可变字重黑体，能拉到 Black(900)
+    r"C:\Windows\Fonts\msyhbd.ttc",          # 微软雅黑 Bold
+    r"C:\Windows\Fonts\Dengb.ttf",           # 等线 Bold
+    r"C:\Windows\Fonts\simhei.ttf",          # 黑体
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+)
+
+
+def _cover_font_path() -> str | None:
+    """封面字体：重黑体优先，找不到才退回卡片那套（保证不因缺字体而崩）。"""
+    for candidate in _COVER_FONT_CANDIDATES:
+        if Path(candidate).is_file():
+            return candidate
+    return graphic.font_path()
+
+
+def _cover_font(size: int, path: str | None = None) -> Any:
+    """封面字形的**唯一入口**：可变字体拉到最重（Black/900），静态字体照用。"""
+    from PIL import ImageFont
+
+    resolved = path or _cover_font_path()
+    if not resolved:
+        raise PublishError("封面叠字找不到中文字体（试过 NotoSansSC/msyhbd/Dengb/simhei/PingFang）")
+    font = ImageFont.truetype(resolved, size)
+    for setter in (lambda: font.set_variation_by_name("Black"), lambda: font.set_variation_by_axes([900])):
+        try:
+            setter()
+            break
+        except (AttributeError, OSError, ValueError, TypeError):
+            continue   # 静态字体没有变体轴 —— 正常情况，不是错误
+    return font
+
+
+def _trim_flat_bands(img: Any, *, tol: float = 9.0, min_frac: float = 0.06) -> Any:
+    """裁掉**平涂边带**（左/右/上/下四个方向）。
+
+    ★ 为什么需要（2026-10-05 实测，不是理论担心）：出图时若想"给封面字留白"，
+      留成一块**平涂色块**，封面会像被劈成两半 —— 实测 `base_003.png` 左侧 638 px
+      （41.5% 宽）的灰度标准差 < 4，`hbase_002..005` 也各有 35–43% 的左带。
+      留白要靠构图（天空、墙面），不能靠填色；真填了，这里自动裁掉。
+
+    判据：降到 ≤240 px 宽后逐列/逐行算灰度标准差（平涂 ≈ 0，画面 ≥ 10），
+    从四条边往里走到第一条"有内容"的线。裁得太狠（剩下的任一边不足 40%）或
+    四边都没到 `min_frac` → 当作误判，原图返回。**不用 numpy**（Pillow 够用，不添依赖）。
+    """
+    from PIL import Image
+
+    gray = img.convert("L")
+    W, H = gray.size
+    sw = min(240, W)
+    sh = max(1, round(H * sw / max(1, W)))
+    small = gray.resize((sw, sh), Image.BILINEAR)
+    px = list(small.getdata())
+
+    def _std(vals: list[int]) -> float:
+        mean = sum(vals) / len(vals)
+        return (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+
+    left = 0
+    while left < sw and _std([px[y * sw + left] for y in range(sh)]) < tol:
+        left += 1
+    right = 0
+    while right < sw - left and _std([px[y * sw + sw - 1 - right] for y in range(sh)]) < tol:
+        right += 1
+    top = 0
+    while top < sh and _std(px[top * sw:(top + 1) * sw]) < tol:
+        top += 1
+    bottom = 0
+    while bottom < sh - top and _std(px[(sh - 1 - bottom) * sw:(sh - bottom) * sw]) < tol:
+        bottom += 1
+
+    sx, sy = W / sw, H / sh
+    cut_l, cut_r, cut_t, cut_b = left * sx, right * sx, top * sy, bottom * sy
+    if max(cut_l, cut_r, cut_t, cut_b) < min_frac * min(W, H):
+        return img
+    box = (int(cut_l), int(cut_t), W - int(cut_r), H - int(cut_b))
+    if box[2] - box[0] < W * 0.4 or box[3] - box[1] < H * 0.4:
+        return img
+    return img.crop(box)
+
+
 def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out: Path,
                  *, layout: str = "left", font_file: str | None = None) -> Path:
-    """把三行字叠到底图上，输出 PNG。`layout` 决定字块位置与压暗方向。
+    """把封面字叠到底图上，输出 PNG。`layout` 决定字块位置与压暗方向。
 
     - `left`（B站横版）：左侧压暗 + 左对齐大字，主体留在右侧；
     - `top`（抖音竖版）：上部压暗 + 居中大字，避开底部操作区。
+
+    ★ 2026-10-05 重做（用户反馈"那几张图不好看 / 封面的字也不够大"）：
+      ① 字号口径从"不许折行、放不下就缩"改成"**折行撑满**" —— 旧口径为了让三行
+         保持三行，10 字以上的长句必被压到 4% 屏高（1536 宽实测字号 ≈ 60 px）；
+         现在按折行后的总高反解**最大**字号（同一个盒子能到 ≈ 200 px）；
+      ② 底图先过 `_trim_flat_bands`：画面必须铺满（见那里的实测数字）；
+      ③ 配色改为深墨字 + 奶白描边（见 `_COVER_INK`）。
     """
     from PIL import Image, ImageDraw
 
@@ -395,57 +579,56 @@ def render_cover(base: Path | None, lines: list[str], size: tuple[int, int], out
     w, h = size
     if base is not None and base.is_file():
         with Image.open(base) as im:
-            canvas = _fit_to_size(im.convert("RGB"), size)
+            canvas = _fit_to_size(_trim_flat_bands(im.convert("RGB")), size)
     else:
         canvas = _gradient(size)
 
     layer, alpha = _scrim(size, "left" if layout == "left" else "top",
-                       strength=0.86, reach=0.86 if layout == "left" else 0.62)
+                          strength=0.78, reach=0.85 if layout == "left" else 0.60)
     canvas = Image.composite(layer, canvas, alpha)
     draw = ImageDraw.Draw(canvas)
 
     if layout == "left":
-        box = (int(w * 0.055), int(h * 0.10), int(w * 0.60), int(h * 0.90))
+        box = (int(w * 0.055), int(h * 0.08), int(w * 0.95), int(h * 0.92))
         align_center = False
     else:
-        box = (int(w * 0.08), int(h * 0.06), int(w * 0.92), int(h * 0.46))
+        box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.74))
         align_center = True
-
-    size_hint = int(h * (0.115 if layout == "left" else 0.075))
-    min_size = max(28, int(h * 0.035))
     max_w = box[2] - box[0]
     max_h = box[3] - box[1]
 
-    # ★ 先缩字号、**再**允许折行：封面字是"三行"，折行会把三行变成四五块，
-    #   结构就散了（作者写的每一行都是完整的一句话）。所以第一轮判据是
-    #   "每一行都不超宽"，宁可字小一号；只有缩到下限还放不下才折行 —— 总比溢出强。
-    font = graphic.font(min_size, path=font_path)
-    wrapped = list(lines)
-    size = size_hint
-    while size > min_size:
-        candidate = graphic.font(size, path=font_path)
-        if all(draw.textlength(line, font=candidate) <= max_w for line in lines) \
-                and len(lines) * int(size * 1.30) <= max_h:
-            font, wrapped = candidate, list(lines)
+    # ★ 折行撑满：从大到小试字号，第一个"折行后总高放得下"的就是它。
+    #   行数变了（三行可能折成六行）是**要的**效果 —— 封面靠字大，不靠字少。
+    cap = int(h * (0.20 if layout == "left" else 0.155))
+    min_size = max(28, int(h * 0.05))
+    size_px = cap
+    font = _cover_font(size_px, font_path)
+    rows = list(lines)
+    while size_px > min_size:
+        font = _cover_font(size_px, font_path)
+        rows = []
+        for line in lines:
+            rows.extend(_wrap_balanced(draw, line, font, max_w))
+        rows = _fix_orphan_punct(rows)
+        if len(rows) * int(size_px * 1.26) <= max_h:
             break
-        size -= 4
-    if size <= min_size:
-        over = [line for line in lines if draw.textlength(line, font=font) > max_w]
-        if over:
-            wrapped = graphic.wrap(draw, "\n".join(lines), font, max_w)
+        size_px -= 4
 
-    line_h = int(font.size * 1.30)
-    block_h = line_h * len(wrapped)
+    line_h = int(font.size * 1.26)
+    block_h = line_h * len(rows)
     top = box[1] + max(0, (max_h - block_h) // 2)
-    stroke = max(2, font.size // 14)
-    for i, line in enumerate(wrapped):
-        x = box[0] + (max_w - draw.textlength(line, font=font)) / 2 if align_center else box[0]
-        draw.text((x, top + i * line_h), line, font=font, fill=(250, 248, 240),
-                  stroke_width=stroke, stroke_fill=(0, 0, 0))
+    # 描边 0.07 字高：0.11 时**描边把字骨吃掉了**（实测渲染成了空心描边字，
+    # 不像 001/002 的粗黑字）。粗黑体 + 细一圈奶白边才是房规。
+    stroke = max(3, int(font.size * 0.07))
+    for i, row in enumerate(rows):
+        x = box[0] + (max_w - draw.textlength(row, font=font)) / 2 if align_center else box[0]
+        draw.text((x, top + i * line_h), row, font=font, fill=_COVER_INK,
+                  stroke_width=stroke, stroke_fill=_COVER_PAPER)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out, "PNG")
     return out
+
 
 
 def _font_path(explicit: str | None) -> str | None:
@@ -454,7 +637,7 @@ def _font_path(explicit: str | None) -> str | None:
         if not path.is_file():
             raise PublishError(f"配置的封面字体不存在：{path}")
         return str(path)
-    return graphic.font_path()
+    return _cover_font_path()
 
 
 # ---- 底图挑选 ---------------------------------------------------------------
@@ -513,7 +696,11 @@ def build_meta(ws: Workspace, config: Config, *, lines_arg: Any = None, base_arg
     lines = cover_lines(meta, lines_arg)
     titles = title_candidates(parse_data, meta)
     tag_list = tags(parse_data, config, lines)
-    desc = description(parse_data, config, lines)
+    episode = episode_hint(parse_data)
+    episode_from_script = episode is not None
+    if episode is None:
+        episode = config.get("publish.episode")
+    desc = description(parse_data, config, lines, episode=episode)
 
     final = ws.path("final.mp4")
     seconds = ff_duration(final) if final.is_file() else None
@@ -527,6 +714,18 @@ def build_meta(ws: Workspace, config: Config, *, lines_arg: Any = None, base_arg
         warnings.append("拍摄稿没有【封面文案】：封面只有底图、没有字（可加 --lines \"行1|行2|行3\"）")
     if seconds is None:
         warnings.append("没有 final.mp4：时长未知（先跑 `lvs build`）")
+    configured_episode = config.get("publish.episode")
+    try:
+        mismatch = (episode_from_script and configured_episode is not None
+                    and int(configured_episode) != int(episode))
+    except (TypeError, ValueError):
+        mismatch = False
+    if mismatch:
+        warnings.append(
+            f"config 里 publish.episode = {configured_episode}，但拍摄稿写的是第 {episode} 期；"
+            f"物料按期号 {episode} 出（config 那个数是手改的，换期容易忘）"
+        )
+
     over = [t for t in titles if len(t) > TITLE_MAX]
     if over:
         warnings.append(f"有 {len(over)} 条标题超过 B站 {TITLE_MAX} 字上限，粘贴时会被截断：{over[0]}")
@@ -541,7 +740,8 @@ def build_meta(ws: Workspace, config: Config, *, lines_arg: Any = None, base_arg
             "translator": str(config.get("publish.translator", "") or ""),
             "publisher": str(config.get("publish.publisher", "") or ""),
             "series": str(config.get("publish.series", "") or ""),
-            "episode": config.get("publish.episode"),
+            "episode": episode,
+            "episode_source": "拍摄稿标题" if episode_from_script else "config",
         },
         "cover": {"lines": lines},
         "bilibili": {

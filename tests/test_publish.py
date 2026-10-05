@@ -249,3 +249,157 @@ def test_douyin_captions_never_emit_a_tags_only_candidate(tmp_path: Path):
     assert len(got) == 3
     assert got[2] == "甲 #书 #怪谈"   # 没配 intro → 用最短的一行封面字兜底
     assert all(c.replace("#书 #怪谈", "").strip() for c in got)
+# ---- 封面改法守卫（2026-10-05 用户打回"图不好看 / 字不够大"后补的判据） ------------
+#
+# 这组测试守的是"封面到底像不像封面"，而不是"函数没抛异常"：
+#   · 字要**大**（旧版单行字高只有屏高 2.8%，信息流里缩成 ≈8 px，等于没字）；
+#   · 底图的平涂色块要**裁掉**（实测 base_003 左侧 41.5% 宽是纯色块）；
+#   · 深墨字要**比奶白描边铺得多**（反过来就是"空心描边字"，就是被打回的那批）；
+#   · 收尾标点不许掉到行首（避头尾）。
+
+
+def _text_rows(out: Path, size: tuple[int, int]) -> list[int]:
+    """有封面字像素的行号（精确配色匹配 —— PIL 画的字一定留下精确像素值）。"""
+    from PIL import Image
+
+    colors = (publish._COVER_INK, publish._COVER_PAPER)
+    with Image.open(out) as im:
+        px = list(im.convert("RGB").getdata())
+    w, h = size
+    return [y for y in range(h)
+            if sum(1 for p in px[y * w:(y + 1) * w] if p in colors) >= 8]
+
+
+def _line_heights(rows: list[int]) -> list[int]:
+    """把"有字的行号"切成一段段连续区间 —— 每段就是一行字的**字面高度**。"""
+    groups: list[int] = []
+    start = prev = None
+    for y in rows:
+        if start is None:
+            start = prev = y
+        elif y == prev + 1:
+            prev = y
+        else:
+            groups.append(prev - start + 1)
+            start = prev = y
+    if start is not None:
+        groups.append(prev - start + 1)
+    return groups
+
+
+def test_cover_text_is_big_enough(tmp_path: Path):
+    """单行字高 ≥ 屏高 8%（旧版实测 2.82%，B 站信息流里 ≈ 8 px，等于没字）。"""
+    out = publish.render_cover(None, ["他七年没回家", "那晚睡的床底下是什么"],
+                               publish.DOUYIN_SIZE, tmp_path / "c.png", layout="top")
+    heights = _line_heights(_text_rows(out, publish.DOUYIN_SIZE))
+    assert heights, "封面上一个字都没找到 —— 叠字没生效"
+    tallest, screen_h = max(heights), publish.DOUYIN_SIZE[1]
+    assert tallest >= screen_h * 0.08, (
+        f"封面字太小：单行 {tallest} px = 屏高 {tallest / screen_h:.2%}（要求 ≥ 8%）")
+
+
+def test_cover_ink_dominates_the_paper_stroke(tmp_path: Path):
+    """深墨字要盖过奶白描边（实测 ink/paper ≈ 1.30）—— 反过来就是空心描边字。"""
+    from PIL import Image
+
+    out = publish.render_cover(None, ["他七年没回家", "那晚睡的床底下是什么"],
+                               publish.BILIBILI_SIZE, tmp_path / "c.png")
+    with Image.open(out) as im:
+        px = list(im.convert("RGB").getdata())
+    ink = sum(1 for p in px if p == publish._COVER_INK)
+    paper = sum(1 for p in px if p == publish._COVER_PAPER)
+    assert ink and paper, f"没找到封面字（ink={ink}, paper={paper}）"
+    assert ink / paper >= 1.0, (
+        f"描边吃掉了字骨：ink={ink}, paper={paper}, 比值 {ink / paper:.2f}")
+
+
+def test_trim_flat_bands_cuts_the_paint_block():
+    """左边 40% 平涂色块 → 必须裁掉；裁完左边第一列就得是有内容的。"""
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (800, 800), (200, 210, 220))
+    draw = ImageDraw.Draw(im)
+    for y in range(800):               # 右侧 60% 有内容（逐行变色 → 列向有方差）
+        draw.line([(320, y), (799, y)], fill=(30 + y % 200, 40, 50 + (y * 3) % 200))
+    trimmed = publish._trim_flat_bands(im)
+    assert trimmed.size[0] < 800, "左侧那块平涂色块没被裁掉"
+    gray = trimmed.convert("L")
+    col = [gray.getpixel((0, y)) for y in range(gray.size[1])]
+    mean = sum(col) / len(col)
+    std = (sum((v - mean) ** 2 for v in col) / len(col)) ** 0.5
+    assert std >= 9.0, f"裁完左边第一列还是平的（std={std:.1f}）"
+
+
+def test_trim_flat_bands_keeps_a_fully_flat_image():
+    """整张都平涂 → 判定为误裁，原图返回（保护"纯色底图"这种正当用法）。"""
+    from PIL import Image
+
+    im = Image.new("RGB", (600, 600), (10, 10, 10))
+    assert publish._trim_flat_bands(im).size == (600, 600)
+
+
+def test_cover_never_starts_a_line_with_closing_punct():
+    """避头尾：`》` 不许掉到行首（实测痛点，见 publish._NO_LINE_START）。"""
+    from PIL import Image, ImageDraw
+
+    assert publish._fix_orphan_punct(["《雨月物语", "》夜宿荒宅"]) == ["《雨月物语》", "夜宿荒宅"]
+    font = publish._cover_font(120)
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    long_line = "《雨月物语》夜宿荒宅里的那盏灯"
+    rows = publish._fix_orphan_punct(
+        publish.graphic.wrap(draw, long_line, font, 600) or [long_line])
+    assert rows
+    assert all(row[0] not in publish._NO_LINE_START for row in rows), rows
+
+
+def test_cover_font_uses_the_bold_chain():
+    """封面取字要走黑体链（曾误走 NotoSerifSC-VF —— 衬线细字 → 空心描边字）。"""
+    assert publish._font_path(None) == publish._cover_font_path()
+def test_wrap_balanced_kills_the_single_char_last_line():
+    """末行只剩一个字 → 按字数均分重切（实测痛点：`他七年没回家` → `他七年没回`/`家`）。"""
+    from PIL import Image, ImageDraw
+
+    font = publish._cover_font(120)
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    char_w = draw.textlength("他", font=font)
+
+    rows = publish._wrap_balanced(draw, "他七年没回家", font, char_w * 5.2)
+    assert len(rows) == 2, rows
+    assert min(len(r) for r in rows) >= 2, rows
+    assert "".join(rows) == "他七年没回家"
+
+    # 本来就折得均匀的，不许乱动（4+3 不是孤字）
+    kept = publish._wrap_balanced(draw, "他七年没回家乡", font, char_w * 4.1)
+    assert "".join(kept) == "他七年没回家乡"
+    assert min(len(r) for r in kept) >= 2, kept
+def test_episode_comes_from_the_script_title_not_the_shared_config(tmp_path: Path):
+    """期号跟**本期**走，config 里那个是手改的（实测坑：给 005 改成 5 后，重出 003 变成"第 5 期"）。"""
+    ws = _ws(tmp_path)
+    _write_parse(ws)
+    data = json.loads(ws.path("parse.json").read_text(encoding="utf-8"))
+    data["title"] = "003-雨月物语-夜宿荒宅 拍摄稿 · 《雨月物语》第三期「夜宿荒宅」"
+    ws.path("parse.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    meta = publish.build_meta(ws, _config(tmp_path, episode=5))
+    assert meta["book"]["episode"] == 3
+    assert meta["book"]["episode_source"] == "拍摄稿标题"
+    assert "第 3 期" in meta["bilibili"]["description"]
+    assert any("第 3 期" in w for w in meta["warnings"])   # config 与拍摄稿打架要报出来
+
+
+def test_episode_falls_back_to_config_without_a_hint(tmp_path: Path):
+    ws = _ws(tmp_path)
+    _write_parse(ws)                                   # 标题里没有「第 N 期」
+    meta = publish.build_meta(ws, _config(tmp_path, episode=2))
+    assert meta["book"]["episode"] == 2
+    assert meta["book"]["episode_source"] == "config"
+    assert not meta["warnings"] or all("期" not in w for w in meta["warnings"])
+
+
+def test_cn_number_reads_chinese_episode_numbers():
+    assert publish._cn_number("三") == 3
+    assert publish._cn_number("十") == 10
+    assert publish._cn_number("十三") == 13
+    assert publish._cn_number("二十三") == 23
+    assert publish._cn_number("12") == 12
+    assert publish._cn_number("廿") is None
