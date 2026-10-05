@@ -311,6 +311,9 @@ SUSPENSE_TEXT = "凶手把尸体藏在密室，阴谋与失踪的惨案，血迹
 HEROIC_TEXT = "他热血冲锋，为复仇决战到底，不屈的英雄逆袭成传说。"
 DAILY_TEXT = "市集上很热闹，酒馆里闲聊俏皮，轻松幽默又有趣的日常生活。"
 SAD_TEXT = "离别时她满眼眼泪，孤独与思念让人叹息，只剩凄凉与遗憾。"
+JA_SAD_TEXT = "她的怨与恨压了几十年，泪都干了，只剩苦。"
+JA_MYSTERY_TEXT = "妖怪与怨灵在异界的梦里现身，带着一股咒。"
+JA_SOLEMN_TEXT = "将军与武士的旧事，幕府和寺院走过千百年。"
 
 
 
@@ -356,6 +359,59 @@ def test_repeated_keywords_beat_single_mention():
     """★ 计次数：提一次"家"不该把满篇"尸体/凶"的惊悚片定成治愈。"""
     text = "家里很安静。" + "尸体" * 3 + "凶手又来了一次。"
     assert bgm.match_style(text).rule.name == "suspense"
+
+
+# ---- 配乐池：整本书钉在「日本古风」（`[bgm].style_pool`） ----------------------
+
+
+def test_pool_rules_are_only_that_pool():
+    names = [r.name for r in bgm.pool_rules("japanese_ancient")]
+    assert names == [
+        "ja_ancient_melancholy", "ja_ancient_mystery",
+        "ja_ancient_solemn", "ja_ancient_calm",
+    ]
+    assert all(r.pool == "japanese_ancient" for r in bgm.pool_rules("japanese_ancient"))
+
+
+def test_empty_pool_keeps_the_generic_rules():
+    """★ 防回归：没写 `style_pool` 的书必须和以前**一模一样**（前 5 期口径）。"""
+    assert bgm.pool_rules("") == tuple(r for r in bgm.STYLE_RULES if not r.pool)
+    assert bgm.match_style(HISTORY_TEXT).rule.name == "solemn_history"
+
+
+def test_pool_picks_variant_by_keywords():
+    assert bgm.match_style(JA_SAD_TEXT, "japanese_ancient").rule.name == "ja_ancient_melancholy"
+    assert bgm.match_style(JA_MYSTERY_TEXT, "japanese_ancient").rule.name == "ja_ancient_mystery"
+    assert bgm.match_style(JA_SOLEMN_TEXT, "japanese_ancient").rule.name == "ja_ancient_solemn"
+
+
+def test_pool_falls_back_inside_the_pool_not_to_neutral():
+    """★ 池内一条都没命中时用**池内底**，不许掉回通用池的中性钢琴。"""
+    m = bgm.match_style("今天下午三点，我们出发去往下一个地点。", "japanese_ancient")
+    assert m.rule.name == "ja_ancient_calm"
+    assert m.keywords == () and not m.matched
+    assert "koto" in m.rule.instruments
+
+
+def test_pool_never_leaks_western_rules():
+    for text in (HISTORY_TEXT, HEALING_TEXT, SUSPENSE_TEXT, HEROIC_TEXT, DAILY_TEXT, SAD_TEXT):
+        rule = bgm.match_style(text, "japanese_ancient").rule
+        assert rule.pool == "japanese_ancient", rule.name
+
+
+def test_unknown_pool_is_a_usage_error():
+    """池名写错要当场报错，不许静默退回通用池（那会让"本书用和风"无声失效）。"""
+    with pytest.raises(bgm.BgmUsageError):
+        bgm.match_style(HISTORY_TEXT, "no_such_pool")
+
+
+def test_style_pool_is_read_from_config():
+    plan = bgm.build_prompt(SAD_TEXT, _cfg(style_pool="japanese_ancient"), use_llm=False)
+    assert plan.pool == "japanese_ancient"
+    assert plan.style["name"] == "ja_ancient_melancholy"
+    assert plan.style["pool"] == "japanese_ancient"
+    assert plan.as_dict()["pool"] == "japanese_ancient"
+    assert "[japanese_ancient]" in plan.describe()
 
 
 def test_no_keyword_falls_back_to_neutral_soft():
@@ -677,6 +733,7 @@ def test_generate_writes_wav_and_meta_with_fake_model(tmp_path, monkeypatch, cap
     assert on_disk["duration_s"] == 20.0 and on_disk["sample_rate"] == 8000
     assert on_disk["license"]["name"] == bgm.LICENSE_INFO["name"]
     assert "no vocals" in meta["prompt"]
+    assert on_disk["style_pool"] == "", "没配池 → 通用池，报告里必须是空串"
 
     again = bgm.generate(ws, _cfg(), duration=20, use_llm=False)
     assert again["reused"] is True, "盘上已有产物就别再烧一遍 CPU"

@@ -135,6 +135,7 @@ class StyleRule:
     instruments: str
     mood: str
     bpm: int
+    pool: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +145,7 @@ class StyleRule:
             "instruments": self.instruments,
             "mood": self.mood,
             "bpm": self.bpm,
+            "pool": self.pool,
         }
 
 
@@ -191,7 +193,102 @@ STYLE_RULES: tuple[StyleRule, ...] = (
          "生活", "玩笑", "闲话", "酒"),
         "light acoustic", "woodwinds, pizzicato, ukulele", "playful, easygoing", 104,
     ),
+
+
+    # ---- 和风池（`[bgm].style_pool = "japanese_ancient"`）----
+    # 一本书整体钉在「日本古风」时用这一族：池内仍按关键词挑变体。
+    # 提示词里刻意写死乐器与音阶（尺八 / 筝 / 三味线 / 太鼓）——
+    # 否则模型会把 "traditional Japanese" 画成通用的东方新世纪风。
+    StyleRule(
+        "ja_ancient_melancholy", "和风·哀",
+        ("悲伤", "离别", "孤独", "思念", "眼泪", "凄凉", "遗憾", "逝去",
+         "叹息", "悲哀", "哀", "怨", "苦", "恨", "弃"),
+        "traditional Japanese chamber music",
+        "shakuhachi bamboo flute, solo koto, sparse low taiko",
+        "mournful, ritual, ancient, hirajoshi scale", 58, "japanese_ancient",
+    ),
+    StyleRule(
+        "ja_ancient_mystery", "和风·怪",
+        ("妖怪", "幽灵", "鬼", "怨灵", "亡灵", "魂", "妖", "幻", "梦", "灵",
+         "咒", "异界", "玄", "诡异", "神秘"),
+        "traditional Japanese noh and gagaku",
+        "nohkan flute, koto tremolo, shamisen, low temple drum, struck singing bowl",
+        "eerie, supernatural, ancient, insen scale", 62, "japanese_ancient",
+    ),
+    StyleRule(
+        "ja_ancient_solemn", "和风·庄",
+        ("历史", "王朝", "将军", "武士", "战乱", "朝廷", "寺院", "僧", "佛", "神",
+         "祭祀", "法事", "岁月", "千百年", "旧事", "幕府", "门第"),
+        "traditional Japanese gagaku court music",
+        "hichiriki reed, sho pipes, koto, low taiko",
+        "solemn, ceremonial, dignified, gagaku mode", 56, "japanese_ancient",
+    ),
+    StyleRule(
+        "ja_ancient_calm", "和风·静",
+        (),
+        "traditional Japanese koto music",
+        "koto, shakuhachi, soft wind chimes",
+        "calm, meditative, ancient, hirajoshi scale", 64, "japanese_ancient",
+    ),
 )
+
+
+#: 配乐池——一本书可以整体钉在一个风格族里（`[bgm].style_pool`）。
+#: 池内仍按关键词挑变体；一条都没命中时用 `POOL_FALLBACK`。
+#: 为什么不直接往 `STYLE_RULES` 里加关键词：那样一本书的口味会泄到别书（里程碑）。
+#: 池把「哪些规则可选」收在配置里，通用池仍然只有原来那几条。
+STYLE_POOLS: dict[str, tuple[str, ...]] = {
+    "japanese_ancient": (
+        "ja_ancient_melancholy", "ja_ancient_mystery",
+        "ja_ancient_solemn", "ja_ancient_calm",
+    ),
+}
+
+POOL_FALLBACK: dict[str, str] = {"japanese_ancient": "ja_ancient_calm"}
+
+#: 池 → 喂给 LLM 的中文风格约束（只进 LLM 指令，不进英文提示词）。
+POOL_STYLE_HINT: dict[str, str] = {
+    "japanese_ancient": (
+        "本书整体约定：日本古代传统器乐（尺八 / 筝 / 三味线 / 能管 / 太鼓），"
+        "用 hirajoshi 或 insen 音阶；不要现代电子、不要西洋管弦、不要新世纪冥想风。"
+    ),
+}
+
+
+def style_pool(config: Config) -> str:
+    """`[bgm].style_pool`：整本书钉在哪个配乐池（见 `STYLE_POOLS`）。空串 = 通用池。"""
+    return str(config.get("bgm.style_pool", "") or "").strip()
+
+
+def pool_rules(pool: str) -> tuple[StyleRule, ...]:
+    """池名 → 候选规则。空串 = 通用池（`STYLE_RULES` 里 `pool == ""` 的那些）。
+
+    池名写错当场报错，不静默退回通用：配置里的池名是人手写的，
+    静默退回会让「本书用和风」这件事无声失效。
+    """
+    if not pool:
+        return tuple(rule for rule in STYLE_RULES if not rule.pool)
+    if pool not in STYLE_POOLS:
+        known = "、".join(sorted(STYLE_POOLS)) or "（无）"
+        raise BgmUsageError(
+            f"未知配乐池：{pool}（可用：{known}）。池名就是 `[bgm].style_pool` 里写的那个。"
+        )
+    allowed = set(STYLE_POOLS[pool])
+    rules = tuple(rule for rule in STYLE_RULES if rule.name in allowed)
+    if len(rules) != len(allowed):
+        missing = sorted(allowed - {rule.name for rule in rules})
+        raise BgmUsageError(f"配乐池 {pool} 声明了不存在的规则：{missing}")
+    return rules
+
+
+def pool_fallback(pool: str) -> StyleRule:
+    """池内一条关键词都没命中时的底。"""
+    name = POOL_FALLBACK.get(pool, "")
+    for rule in STYLE_RULES:
+        if rule.name == name:
+            return rule
+    return FALLBACK_STYLE
+
 
 #: 一条关键词都没命中的保底：中性、柔和、绝不抢戏。
 FALLBACK_STYLE = StyleRule(
@@ -213,7 +310,8 @@ class StyleMatch:
         return bool(self.keywords)
 
 
-def match_style(text: str) -> StyleMatch:
+#: 配乐池：`pool` 非空时只在该池内挑（见 `STYLE_POOLS`），命中不到就用池内底。
+def match_style(text: str, pool: str = "") -> StyleMatch:
     """从文案里挑风格：按命中关键词**次数**计分，平票取 `STYLE_RULES` 里靠前的。
 
     为什么要计次数而不是"命中即选"：一段讲稿反复出现"死/凶/尸体"显然是惊悚，
@@ -223,12 +321,14 @@ def match_style(text: str) -> StyleMatch:
     best: StyleRule | None = None
     best_score = 0
     best_hits: tuple[str, ...] = ()
-    for rule in STYLE_RULES:
+    for rule in pool_rules(pool):
         hits = [kw for kw in rule.keywords if kw in haystack]
         score = sum(haystack.count(kw) for kw in hits)
         if score > best_score:
             best, best_score, best_hits = rule, score, tuple(hits)
     if best is None:
+        if pool:
+            return StyleMatch(pool_fallback(pool), ())
         return StyleMatch(FALLBACK_STYLE, ())
     return StyleMatch(best, best_hits)
 
@@ -262,6 +362,7 @@ class PromptPlan:
     style: dict[str, Any]
     source: str                      # "llm" | "rules" | "manual"
     keywords: tuple[str, ...] = ()
+    pool: str = ""                   # 命中的配乐池（`[bgm].style_pool`），空 = 通用
     warnings: list[str] = field(default_factory=list)
     text_chars: int = 0
 
@@ -271,6 +372,7 @@ class PromptPlan:
             "style": self.style,
             "source": self.source,
             "keywords": list(self.keywords),
+            "pool": self.pool,
             "text_chars": self.text_chars,
             "warnings": list(self.warnings),
         }
@@ -278,8 +380,9 @@ class PromptPlan:
     def describe(self) -> str:
         style = self.style
         hit = f"（命中：{'/'.join(self.keywords)}）" if self.keywords else ""
+        tag = f"[{self.pool}] " if self.pool else ""
         return (
-            f"{style['label']}{hit} → {style['genre']} · {style['instruments']} · "
+            f"{tag}{style['label']}{hit} → {style['genre']} · {style['instruments']} · "
             f"{style['mood']} · {style['bpm']} BPM"
         )
 
@@ -343,12 +446,14 @@ def build_prompt(
     LLM 可用就用 LLM（拿它的 `prompt`，风格字段也用它）；**任何失败都退回规则**，
     并把原因塞进 `warnings` —— 配乐不该因为一次 429 就整片没有 BGM。
     """
-    rules = match_style(text)
+    pool = style_pool(config)
+    rules = match_style(text, pool)
     plan = PromptPlan(
         prompt=style_prompt(rules.rule),
         style=rules.rule.as_dict(),
         source="rules",
         keywords=rules.keywords,
+        pool=pool,
         text_chars=len(text or ""),
     )
     if not use_llm:
@@ -366,6 +471,7 @@ def build_prompt(
             "content": (
                 f"讲稿摘录（可能被截断）：\n{(text or '')[:3000]}\n\n"
                 f"成片时长约 {duration:.0f} 秒。"
+                + (f"\n\n{POOL_STYLE_HINT[pool]}" if pool in POOL_STYLE_HINT else "")
             ),
         },
     ]
@@ -966,6 +1072,7 @@ def generate(
             prompt=prompt,
             style=FALLBACK_STYLE.as_dict(),
             source="manual",
+            pool=style_pool(config),
             text_chars=len(text),
         )
     else:
@@ -1004,6 +1111,7 @@ def generate(
         "prompt_source": plan.source,
         "style": plan.style,
         "keywords": list(plan.keywords),
+        "style_pool": plan.pool,
         "warnings": list(plan.warnings),
         "duration_s": round(float(seconds), 3),
         "seed": use_seed,
