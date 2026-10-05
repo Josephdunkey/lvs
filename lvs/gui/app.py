@@ -20,6 +20,7 @@ from flask import (
 )
 
 from lvs.config import PROJECT_ROOT, Config, ConfigError, find_config
+from lvs import media
 from lvs import sources
 from lvs.errors import EXIT_USAGE, LvsError
 from lvs.gui import configio, jobs, store
@@ -31,7 +32,11 @@ MANUSCRIPT_NAME = "manuscript.md"
 
 # 用户自己挑的图（票 40）
 PICK_DIRNAME = "picked"
-PICK_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+# 允许上传的图片格式 —— 真源 `lvs.media`（缺陷 B02/Q02），不再自己抄一份字面量。
+# ★ **刻意跟着 media 走**：比原先多出 .gif/.tif/.tiff，是有意为之 ——
+#   `assets` 阶段本来就会把素材库里的 tif 拷进来，而 `build` 现在也认它是图片
+#   （收窄在这里只会拦下本来能用的图）。真正的把关是下面 `Image.verify()`。
+PICK_SUFFIXES = media.IMAGE_EXTS
 MAX_PICK_BYTES = 24 * 1024 * 1024
 
 #: 认作"本机"的主机名。判跨站写请求用（见 `_block_cross_site_writes`）。
@@ -774,7 +779,7 @@ def save_picked_image(task_dir: Path, sid: int, filename: str, data: bytes) -> P
     """
     suffix = Path(filename or "").suffix.lower()
     if suffix not in PICK_SUFFIXES:
-        raise GuiError(f"只收这些格式的图：{'/'.join(PICK_SUFFIXES)}（收到 {suffix or '没有后缀'}）")
+        raise GuiError(f"只收这些格式的图：{'/'.join(sorted(PICK_SUFFIXES))}（收到 {suffix or '没有后缀'}）")
     if not data:
         raise GuiError("这个文件是空的")
     if len(data) > MAX_PICK_BYTES:

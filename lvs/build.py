@@ -21,6 +21,7 @@ from typing import Any
 
 from lvs import assets as assets_mod
 from lvs import handoff
+from lvs import media as media_mod
 from lvs import prompting
 from lvs import artifact
 from lvs.config import Config
@@ -184,7 +185,12 @@ DEFAULT_SUBTITLE_STYLE = (
 
 KENBURNS_SUPERSAMPLE_MAX = 4
 
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# 图片扩展名白名单 —— **唯一真源在 `lvs.media`**（缺陷 B02/Q02）。
+# 这里原先自己抄了一份、且漏了 .tif/.tiff/.gif：素材库里的 tif 会被当成
+# "不是图片"，既不进 Ken Burns、也不当视频 → 成片里落成**永久黑帧**（判活/校验都不报）。
+# 保留 `IMAGE_SUFFIXES` 这个名字是因为它对本模块之外可见（回归断言见 `tests/test_media.py`）；
+# 它只是**同一个 frozenset 的别名**，不是第二份字面量。
+IMAGE_SUFFIXES = media_mod.IMAGE_EXTS
 
 
 def _has_kenburns(shot: dict[str, Any]) -> bool:
@@ -192,7 +198,7 @@ def _has_kenburns(shot: dict[str, Any]) -> bool:
     asset = shot.get("asset_path")
     if not asset or shot.get("kind") == prompting.KIND_GRAPHIC:
         return False
-    return Path(str(asset)).suffix.lower() in IMAGE_SUFFIXES
+    return media_mod.is_image(asset)
 
 
 def motion_sequence(shots: list[dict[str, Any]], mode: str, amount: float) -> list[str]:
@@ -415,7 +421,7 @@ def build_segments(
         src = Path(asset) if asset else None
         has_asset = bool(src and src.is_file())
         # 图文/图表卡片是"要读的信息"，运镜只会让它更难读（票据 28）→ 静止
-        is_image = bool(has_asset and src.suffix.lower() in IMAGE_SUFFIXES)
+        is_image = bool(has_asset and media_mod.is_image(src))
         mode_for_shot = ("none" if shot.get("kind") == prompting.KIND_GRAPHIC
                          else motions[idx]) if is_image else short_mode
         want_key = segment_key(
@@ -740,6 +746,85 @@ def final_sanity(path: Path, *, config: Config | None = None) -> tuple[list[str]
     return hard, warns
 
 
+# ---- 成片 / 音轨时长硬校验（票 20 第 3 条）----------------------------------
+#
+# 为什么这一条是**硬校验**（而静音 / 黑屏只警告）：时长对不上 = 末尾必然音画错位，
+# 这是"一定不对"的产物，不像"整片黑屏"那样可能是合法风格（有声书式全黑配图）。
+# 判据与阈值的选择见下面两个常量的注释。
+
+#: 成片与音轨 / 字幕时间轴的**最大允许相对偏差**。
+#:
+#: 2% 的来历：
+#:   ① 噪声：mp3 帧对齐（≈24–26ms）+ 逐镜按 30fps 取整（每镜 ≤33ms），363 镜累计
+#:      约 6s —— 对 10 分钟的片子约 0.6%，2% 留了 3 倍余量（e2e 的 0.5s 不变量同理）；
+#:   ② 结构化故障（画面轨整段丢了 / 音轨被 `-shortest` 截半 / 两条时间轴各拼各的）
+#:      偏差都是十几个百分点，2% 一定抓得住；
+#:   ③ 再配一个绝对下限：短片按比例算只有几百毫秒，会和上面那点噪声纠缠不清。
+DEFAULT_DURATION_DRIFT_MAX = 0.02
+#: 允许偏差的绝对下限（秒）。低于此值的偏差一律放过（与 e2e 的 0.5s 不变量同量级）。
+DEFAULT_DURATION_DRIFT_ABS = 0.5
+
+
+def _drift_line(label_a: str, a: float, label_b: str, b: float, ratio: float) -> str | None:
+    """两个时长差太多就返回人话一行，否则 None。"""
+    base = max(abs(a), abs(b))
+    limit = max(DEFAULT_DURATION_DRIFT_ABS, base * ratio)
+    drift = abs(a - b)
+    if drift <= limit:
+        return None
+    pct = (drift / base * 100.0) if base else 100.0
+    return (
+        f"{label_a} {a:.1f}s 与 {label_b} {b:.1f}s 相差 {drift:.1f}s"
+        f"（{pct:.1f}%，允许 {ratio:.0%}，且不超过 {limit:.1f}s）"
+    )
+
+
+def duration_drift(
+    final: Path,
+    narration: Path | None = None,
+    *,
+    timeline: float | None = None,
+    task: str = "",
+    config: Config | None = None,
+) -> str | None:
+    """成片 ↔ 旁白 ↔ 字幕时间轴：偏差超阈值时返回**问题 + 下一步**，否则 None。
+
+    - 成片 vs 旁白：`-shortest` 混流之后成片应当与旁白等长（e2e 的核心不变量）；
+    - 旁白 vs 字幕轴（最后一镜的 `end`）：字幕按这条轴铺，差太多字幕就会跑到片子外面。
+    探测读不到就跳过（不妄下结论）——这一层是给用户看的文字，**不抛异常**；
+    调用方拿到非 None 就按硬问题处理（见 `run_command`）。
+    """
+    ratio = DEFAULT_DURATION_DRIFT_MAX
+    if config is not None:
+        try:
+            ratio = float(config.get("build.duration_drift_max", ratio))
+        except (TypeError, ValueError):
+            ratio = DEFAULT_DURATION_DRIFT_MAX
+
+    final_dur = ff_duration(final)
+    audio_dur = ff_duration(narration) if narration is not None else None
+
+    problems: list[str] = []
+    if final_dur and audio_dur:
+        line = _drift_line("成片", float(final_dur), "旁白", float(audio_dur), ratio)
+        if line:
+            problems.append(line)
+    if audio_dur and timeline:
+        line = _drift_line("旁白", float(audio_dur), "字幕时间轴", float(timeline), ratio)
+        if line:
+            problems.append(line)
+    if not problems:
+        return None
+    name = task or "<task>"
+    return (
+        "；".join(problems)
+        + " —— 音画不是同一条时间轴，交出去就是末尾错位（字幕同步跑偏）。"
+        + f"下一步：先 `lvs status --task {name}` 看 voice / build 两道门，"
+        + f"再 `lvs build --task {name} --force` 重渲片段并重新混流；"
+        + "若旁白本身就短了，先补跑 `lvs voice`。"
+    )
+
+
 def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
     force = bool(getattr(args, "force", False))
     shots_path = ws.path("shots.json")
@@ -810,6 +895,15 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
 
     # 整片终检（音轨 / 音量 / 黑屏）—— 逐片段查不出的那类故障在这里兜住。
     hard, sanity_warns = final_sanity(final, config=config)
+    # ★ 时长硬校验（票 20）：成片 vs 旁白 vs 字幕轴。静音 / 黑屏只是警告（可能合法），
+    #   时长对不上必须**拦下**：那是"一定不对"的产物，不该静默出片。
+    drift = duration_drift(
+        final, narration,
+        timeline=float(shots[-1].get("end") or 0.0),
+        task=ws.task, config=config,
+    )
+    if drift:
+        hard.append(drift)
     for w in sanity_warns:
         print(f"  ⚠ 成片终检：{w}")
     if hard:

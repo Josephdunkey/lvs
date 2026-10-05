@@ -26,10 +26,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from lvs import artifact
+from lvs import media
 from lvs.config import PROJECT_ROOT
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
-VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+# 图片/视频扩展名白名单 —— 真源在 `lvs.media`（缺陷 B02/Q02）。
+# 这两个名字是本模块对外的历史 API，保留为**同一份 frozenset 的别名**
+# （不是第二份字面量）；要加格式只改 `lvs/media.py`。
+IMAGE_EXTS = media.IMAGE_EXTS
+VIDEO_EXTS = media.VIDEO_EXTS
 
 CACHE_DIRNAME = Path(".work") / "_library"
 INDEX_NAME = "library-index.json"
@@ -161,10 +165,9 @@ def scan(dirs: Iterable[str | Path], recursive: bool = True) -> list[Entry]:
         for path in walker:
             if not path.is_file():
                 continue
-            ext = path.suffix.lower()
-            if ext in IMAGE_EXTS:
+            if media.is_image(path):
                 kind = "image"
-            elif ext in VIDEO_EXTS:
+            elif media.is_video(path):
                 kind = "video"
             else:
                 continue

@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
+from lvs import media
 from lvs import workspace as ws_mod
 from lvs.config import PROJECT_ROOT
 
@@ -30,8 +31,13 @@ STAGE_LABELS = {name: (_BY_NAME[name].short or _BY_NAME[name].title) for name in
 
 # 逐镜产物的落点与后缀 —— 只有这些算进度。分支表来自 workspace（唯一 owner）
 ASSET_BRANCHES = ws_mod.ASSET_BRANCHES
-ASSET_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".mp4", ".mov", ".webm", ".mkv")
-AUDIO_SUFFIXES = (".mp3", ".wav", ".m4a", ".aac", ".opus", ".flac")
+# 图片 + 视频后缀 —— 真源 `lvs.media`（缺陷 B02/Q02），不再自己抄一份字面量。
+# ★ **比原先放宽了**（多出 .gif/.tif/.tiff/.avi/.m4v），是有意为之：`assets` 阶段
+#   本来就会把素材库里的 tif/avi 拷成 `shot-NNN.<原后缀>`，界面若不算它们，
+#   进度会显示"缺素材" —— 这正是 build 黑帧那类漂移的界面版。
+ASSET_SUFFIXES = media.IMAGE_EXTS | media.VIDEO_EXTS
+# 音频后缀：真源同上（这份列表原先只写在这里，现在搬进 `lvs/media.py`）。
+AUDIO_SUFFIXES = media.AUDIO_EXTS
 
 # 界面上允许改的分镜字段（写回 shots.json —— 它是"人工可编辑的真相源"，D14）
 EDITABLE_SHOT_FIELDS = ("prompt", "seed", "source", "narration")
@@ -112,7 +118,7 @@ def _load_json(path: Path, default: Any) -> Any:
         return default
 
 
-def _count_shots(directory: Path, suffixes: tuple[str, ...]) -> set[str]:
+def _count_shots(directory: Path, suffixes: Collection[str]) -> set[str]:
     """数出该目录里有哪些**逐镜**产物，返回 `shot-001` 这样的 stem 集合。"""
     if not directory.is_dir():
         return set()
