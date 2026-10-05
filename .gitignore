@@ -54,3 +54,8 @@ test_*.jpg
 
 # 演示成片（14 MB，可由 .work 里的任务重跑生成；同目录 说明.md 仍进 git）
 docs/demo/*.mp4
+
+# 覆盖率产物（.coveragerc 门禁 + tests/test_coverage_ratchet.py 用）
+.coverage
+.coverage.*
+htmlcov/

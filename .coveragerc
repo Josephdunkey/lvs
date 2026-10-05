@@ -1,0 +1,45 @@
+# .coveragerc —— 覆盖率门禁（M03：主路径无门禁 → 防倒退的棘轮）
+#
+# 为什么要有它：coverage 早就装在 venv 里，但仓库没有阈值、没有 CI 步骤，
+# 主路径退步没有任何东西会告诉你（M03 实测：studio 42% / tts 61% / run 65%）。
+#
+# 这条门禁是"防倒退"，不是"逼一次性补全覆盖"：
+#   fail_under 锁在 2026-10-05 实测水位**之下**（见 [report] 段注释），只挡断崖式下跌。
+#
+# 用法（一条命令跑完，退出码即门禁）：
+#   ./.venv/Scripts/python.exe -m coverage run -m pytest -m "not slow and not gpu"
+#   ./.venv/Scripts/python.exe -m coverage report
+#   # 关键模块单独设线（只许升不许降）：
+#   ./.venv/Scripts/python.exe -m coverage json -o .work/tmp/cov.json
+#   ./.venv/Scripts/python.exe -m pytest tests/test_coverage_ratchet.py
+#
+# 抬高水位的规矩：改完主路径 → 重跑一次上面的命令 → 把实测值往下取 3 个点写回这里。
+
+[run]
+source = lvs
+# branch：语句覆盖看不见"if 的另一半"（M04 就是这类问题）
+branch = True
+#: omit 要在 [run] 和 [report] 两处都写：前者决定"收不收集"，后者决定"报不报"，
+#: 而 report 不读 run 的 omit（本机实测）。`*/` 前缀也必须写（相对路径匹配不上）。
+omit =
+    */lvs/__main__.py
+    */lvs/gui/__init__.py
+
+[report]
+precision = 1
+omit =
+    */lvs/__main__.py
+    */lvs/gui/__init__.py
+
+show_missing = True
+skip_covered = False
+#: 2026-10-05 实测 TOTAL = 74.0%（fast 组，branch=True）→ 锁 71，留 3 个点余量。
+fail_under = 71
+exclude_also =
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    \.\.\.
+    # pragma: no cover
+
+[html]
+directory = .work/tmp/htmlcov

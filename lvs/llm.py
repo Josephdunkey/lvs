@@ -32,14 +32,51 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 class LLMError(LvsError, RuntimeError):
-    """LLM 调用或解析失败。"""
+    """LLM 调用或解析失败。
+
+    `raw` 是**触发失败的那次原始响应**（`shots.py:585` 用它落盘排查）——
+    声明成字段而不是动态 `setattr`，将来改名静态检查能发现。
+    """
 
     exit_code = EXIT_FAILED
 
+    def __init__(self, message: str = "", raw: str | None = None) -> None:
+        super().__init__(message)
+        self.raw: str | None = raw
+
+
+#: 传输层注入点（测试 / 离线用）。默认 `None` = 走 `requests.post`，生产行为不变。
+_transport: Any = None
+
+
+def set_transport(transport: Any) -> None:
+    """注入自定义 HTTP 传输层（签名同 `requests.post`）；传 `None` 恢复默认。
+
+    这是 `LLMClient.chat` **唯一**的可替换点：测试用它换掉联网，不必 monkeypatch
+    全局 `requests`，也不会污染其它用例。生产路径默认 `None`，行为一字不变。
+    """
+    global _transport
+    _transport = transport
+
+
+def _post(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: int) -> Any:
+    """真正发请求的地方 —— 冷路径与错误语义都集中在这里。"""
+    transport = _transport
+    if transport is None:
+        if requests is None:
+            raise LLMError("未安装 `requests`，无法调用 LLM。请 pip install requests。")
+        transport = requests.post
+    return transport(url, json=payload, headers=headers, timeout=timeout)
+
 
 def available(config) -> bool:  # noqa: ANN001 - Config
-    """是否具备可用的 LLM 配置（key 已填 + requests 可用）。"""
-    return requests is not None and bool(config.has("app.openai_api_key"))
+    """是否具备可用的 LLM 配置（key 已填 + 有可用传输层）。
+
+    "有传输层" = 装了 `requests`，或测试用 `set_transport()` 注入了假传输层
+    （这样离线也能覆盖这段行为，不必真联网）。
+    """
+    has_transport = _transport is not None or requests is not None
+    return has_transport and bool(config.has("app.openai_api_key"))
 
 
 class LLMClient:
@@ -53,7 +90,7 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, config) -> "LLMClient":  # noqa: ANN001 - Config
-        if requests is None:
+        if requests is None and _transport is None:
             raise LLMError("未安装 `requests`，无法调用 LLM。请 pip install requests。")
         if not config.has("app.openai_api_key"):
             raise LLMError(
@@ -80,7 +117,7 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
+            resp = _post(url, payload, headers, self.timeout)
         except Exception as exc:  # 网络类异常统一转成 LLMError
             raise LLMError(f"LLM 请求失败（{url}）：{exc}") from exc
         if resp.status_code >= 400:
@@ -141,7 +178,6 @@ def chat_json(client: LLMClient, messages: list[dict[str, str]], *, retries: int
             text = client.chat(messages, **kw)
             return extract_json(text)
         except LLMError as exc:
-            last_err = exc
-            # 把上面拿到的原文挂在异常上，便于调用方落盘
-            setattr(exc, "raw", text)
+            # 把上面拿到的原文带上，便于调用方落盘（`shots.py:585` 读 `.raw`）
+            last_err = LLMError(str(exc), raw=text)
     raise last_err if last_err else LLMError("LLM 调用失败")

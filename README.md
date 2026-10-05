@@ -88,7 +88,7 @@ lvs doctor
 > 阶段间产物契约统一在 `lvs/handoff.py`（上下游都验同一份 schema）；
 > 连续失败熔断在 `lvs/breaker.py`。
 > 架构约束由 `tests/test_architecture.py` 守着（改坏了会红）。
-> 详见 `docs/架构审查-整体.md`、`docs/编排框架审查-外部对标.md`。
+> 详见 `docs/_archive/架构审查-整体.md`、`docs/_archive/编排框架审查-外部对标.md`。
 
 > **退出码**（`lvs run` / 各阶段统一）：
 > `0` 成功 ｜ `1` **有失败件**（逐镜隔离：某几镜没取到素材/没合出音 → `run` 会继续，最后汇总报 1）
