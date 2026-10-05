@@ -167,3 +167,29 @@ L1 文字锚定 ✅｜**L2 参考图 img2img ✅ 已真机验证**｜L3 LoRA ❌
   torchmetrics**（拖 matplotlib → numpy ABI 炸）。
 - 实测（CPU，8 步 pingpong）：`--duration 15` 生成 **89 s**（8 步采样 17 s，其余是加载 3.3 GB）；
   `lvs bgm mix` 对 1519 s 成片 **189 s** 出 `bgm_final.mp4`（`-c:v copy`，原片不动）。
+
+
+## 产物契约与成片自检（P2，2026-10-05）
+
+- **四份产物契约 = `schemas/*.json`**（`shots` / `parse` / `config` / `qc`），照 `schemas/README.md`
+  的"契约 ↔ 代码真源"表读；`lvs/schemas.py` 是加载器（`LVS_SCHEMA_DIR` 是目录逃生阀）。
+  ★ 它们**随 wheel 装在顶层 `schemas/`**（`pyproject` 的 package-data，与 `workflows/` 同手法）——
+  改 `schemas/` 就顺手跑 `pytest tests/test_packaging.py`（slow 组，真建 wheel）。
+- ★ **schema 与 `handoff.validate_shots` 互为镜像**：`tests/test_schemas.py` 里有一条参数化判据
+  ——"人为破坏一个字段 → 两边**同时**变红"。**改任一边必须两边同时改**，否则红。
+  已知能力差（故意留的）：重复 `id` 只有 handoff 抓得到（JSON Schema 表达不了"按键唯一"）；
+  `source` 枚举 / `REQUIRED_FIELDS` 则两边必须**逐字一致**。
+- **`lvs config check`**：必填（`paths.lib` / `shots.style|visual_mode|source_mode`）与**类型**写错 = error
+  （退出码 1）；**未知键只警告**（退出码不变，warn 不拦）—— 动态键 `bgm.<key>` / `comfyui.<key>` /
+  `[styles.<名字>]` / `providers.routes` 刻意不进"已知键"表（收了就是误报）；找不到文件 = 退出码 2。
+  它**校验合并后的配置**（`[base]` 已展开、环境变量已叠加）。配置坏了也能出报告（它排在 `Config.load` 之前）。
+- **`lvs qc --final`**：成片自检 = ffprobe（时长/流/分辨率）+ 4 帧抽检（存在且**非黑帧**）+ 音频
+  静音（≤ -60 dBFS = error；峰值 ≥ -0.1 dBFS = warn）+ 字幕存在（末条 < 0.8×片长 = warn）。
+  报告落 `.work/<task>/qc/final-report.json`（结构由 `schemas/qc.schema.json` 管）。
+  ★ **只报警不改判**：`criteria.CRITERIA` 里没有 G5（也不许加），qc 的结论不进 G5 判定；
+  它**只读**（不建任务目录、不写 `gates.json` / `manifest.json`、不记 `stage_end`）。
+  `--video` 可指任意片子，`--subtitle none` 表示字幕已烧进画面（那条判据跳过）。
+- 真跑 ffmpeg 的用例在 **slow 组**（`@pytest.mark.slow`），fast 组保持全离线；
+  `lvs/ffmpeg.py` 新增 `volume_stats_db()`（一次 `volumedetect` 同时给平均/峰值，
+  `mean_volume_db()` 语义不变，只是薄封装）。
+
