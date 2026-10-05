@@ -8,6 +8,8 @@
 - ★ 改定妆卡必重跑 `lvs cast --extract`；改锚定后旧候选移 `<角色>/_superseded-*/`，否则审阅表新旧混排。
 - 退出码：`0` 成功｜`1` 逐镜失败（run 继续并汇总）｜`2` 输入前置不对（停，`--keep-going` 可跳）｜`3` 人审门禁（停，不跳）。**2/3 必须分开**。
 - 门禁 = 人批准 AND 自动判据；判据自身出错按通过；`run` 与单命令共用 `stage.note_stage_end`。
+- ★ **G2（定妆）的指纹 = 本集槽位级**（`cast.slots_fingerprint()`：本集槽位名+state+锚定+参考图 stat+禁项）。**别改回**「指纹全库 `_cast/lock.json`」——那会让任意一集增删人物把其余各集全判失效（2026-10-06 实测：008 加 4 人、009 加 2 人各触发一轮 UGE01-UGE09 重批）。判活/批准的唯一入口是 `pipeline.subject_state()`。
+- ★ 拆镜分批 `[shots].llm_batch = 8`：一批 20 镜会撞 deepseek-chat 的 4096 输出上限、响应截断、`lvs shots` 退 2（整段拆镜白跑）。**别无脑调大**；要省钱试 12，失败也只是退 2 不出坏产物。
 
 ## 架构（`tests/test_architecture.py` 守）
 真源：`stage`/`errors`/`artifact`/`styles`/`handoff`/`breaker`/`criteria`/`result`/`runlog`/`workspace`；血缘 `mark_stage`。
