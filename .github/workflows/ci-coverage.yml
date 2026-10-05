@@ -1,0 +1,55 @@
+# coverage —— 覆盖率双门禁：全局 fail_under=71（退出码即门禁）+ 关键模块棘轮。
+#
+# 本地等价命令（跑完即门禁，退出码 0 才算过）：
+#   ./.venv/Scripts/python.exe -m coverage run -m pytest -m "not slow and not gpu"
+#   ./.venv/Scripts/python.exe -m coverage report
+#   ./.venv/Scripts/python.exe -m coverage json -o .work/tmp/cov.json
+#   ./.venv/Scripts/python.exe -m pytest tests/test_coverage_ratchet.py
+#
+# 注意：coverage 不在 dev extra 里，必须显式 pip install（AGENTS.md 第 9 条）。
+name: coverage
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  coverage:
+    name: coverage ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装（dev extra + coverage）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" coverage
+
+      - name: 覆盖率数据采集（fast 组）
+        run: python -m coverage run -m pytest -m "not slow and not gpu"
+
+      - name: 全局门禁（fail_under=71 见 .coveragerc，非 0 退出即失败）
+        run: python -m coverage report
+
+      - name: 产出棘轮数据（.work/ 被 gitignore，所以先建目录）
+        run: |
+          mkdir -p .work/tmp
+          python -m coverage json -o .work/tmp/cov.json
+
+      - name: 关键模块棘轮（必须真跑：缺 cov.json 会自动 skip = 门禁形同虚设）
+        run: |
+          set -euo pipefail
+          test -s .work/tmp/cov.json
+          python -m pytest tests/test_coverage_ratchet.py -rs

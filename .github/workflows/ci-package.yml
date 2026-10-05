@@ -1,0 +1,54 @@
+# package —— 构建 wheel 并断言 GUI 资源真的进包。
+#
+# 为什么单列一个作业：项目历史上有两次**静默漏包**（写死 packages=["lvs"] 漏掉 lvs.gui；
+# 补 package-data 前 lvs/gui/templates/*.html 与 static/* 一个都没进 wheel），
+# pip 全程不报错，装完 GUI 每个页面 404。见 pyproject.toml [tool.setuptools.package-data] 的实测注记。
+#
+# 本地等价命令：
+#   ./.venv/Scripts/python.exe -m pip wheel . --no-deps -w wheelhouse
+#   ./.venv/Scripts/python.exe .work/tools/check_wheel_contents.py
+name: package
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  wheel:
+    name: build wheel + 资源断言
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 升级 pip
+        run: python -m pip install --upgrade pip
+
+      - name: 构建 wheel（--no-deps：只打包，不解析运行依赖）
+        run: python -m pip wheel . --no-deps -w wheelhouse
+
+      - name: 断言 wheel 内含 GUI 模板与静态资源
+        run: |
+          set -euo pipefail
+          WHEEL=$(find wheelhouse -name '*.whl' | head -n1)
+          test -n "$WHEEL"
+          python -c "
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          tmpl = [n for n in names if n.startswith('lvs/gui/templates/') and n.endswith('.html')]
+          static = [n for n in names if n.startswith('lvs/gui/static/')]
+          print('wheel=%s entries=%d templates=%d static=%d' % (sys.argv[1], len(names), len(tmpl), len(static)))
+          assert tmpl, 'wheel 缺少 lvs/gui/templates/*.html（静默漏包事故）'
+          assert static, 'wheel 缺少 lvs/gui/static/*（静默漏包事故）'
+          " "$WHEEL"

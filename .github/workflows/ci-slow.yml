@@ -1,0 +1,38 @@
+# slow —— 手动触发的重活：真 ffmpeg 编码 / 真起子进程 / 真建 wheel / 端到端流水线。
+#
+# 为什么不让它挡 PR：这些用例实测单条 >1 s，全组 250 s 量级，8GB 单机上跑不动还得串行。
+# 本地等价命令：./.venv/Scripts/python.exe -m pytest -m slow
+name: slow
+
+on:
+  workflow_dispatch:        # 只手动触发（GitHub 页面 Actions → slow → Run workflow）
+
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    name: pytest -m slow
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装全部 extras（slow 组会碰 GUI / 图像 / 打包路径）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[all,dev]"
+
+      - name: 确认 ffmpeg 可用（runner 一般预装，缺则补装）
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n1
+
+      - name: 慢组测试
+        run: python -m pytest -m slow
