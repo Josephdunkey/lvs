@@ -539,6 +539,26 @@ def _apply_llm_item(
     shot["source"] = src if src in {"pexels", "local"} else heuristic_source(scene)
 
 
+def _llm_batch(config) -> int:  # noqa: ANN001
+    """每批送几镜给 LLM。**`[shots].llm_batch` 的唯一读取点**，默认 20。
+
+    ★ 为什么要有这个旋钮（2026-10-06 实机踩坑）：拆镜的**每次调用**是
+    「一段里切 20 镜」，模型要为每一镜各写一条英文 prompt + scene + keywords。
+    实测 UGE08（青头巾）第 134–153 镜那一批，响应写到第 12 镜就被**输出上限**截断
+    （deepseek-chat 默认 max_tokens=4096），整批 JSON 解析失败、`lvs shots` 直接退 2。
+    把批调小（8–12）就绕开：宁可多几次调用，也别让一整段拆镜前功尽弃。
+
+    读坏值/没配 → 退回默认 20，并夹在 1..40 之间（0 或负数会让切片死循环）。
+    """
+    try:
+        value = int(config.get("shots.llm_batch") or 0)
+    except (TypeError, ValueError):
+        return 20
+    if value <= 0:
+        return 20
+    return max(1, min(40, value))
+
+
 def _llm_enrich(
     client: llm_mod.LLMClient,
     shots: list[dict[str, Any]],
@@ -977,7 +997,10 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
         llm_mod.configure(ws=ws, stage="shots", config=config)
         print(f"用 LLM 做 beat 归位 / 分类 / 场景翻译 / 提示词（模型 {client.model}，画面模式 {visual_mode}）…")
         try:
-            _llm_enrich(client, shots, ws, segment_beats, mode=visual_mode, style=style)
+            _llm_enrich(
+                client, shots, ws, segment_beats,
+                mode=visual_mode, style=style, batch=_llm_batch(config),
+            )
         except llm_mod.LLMError as exc:
             print(f"LLM 拆镜失败：{exc}")
             return 2

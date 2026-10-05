@@ -490,3 +490,24 @@ class PromptNegationTest(unittest.TestCase):
             S.llm_mod.chat_json = real
         self.assertEqual(fixed, 1)
         self.assertEqual(shots_mod.prompt_negations(shots_), {})
+
+
+class LlmBatchConfigTest(unittest.TestCase):
+    """`[shots].llm_batch`（票：UGE08 拆镜被 4096 输出上限截断，2026-10-06）。"""
+
+    class _Cfg:
+        def __init__(self, value):
+            self._value = value
+
+        def get(self, key):  # noqa: ARG002 - 只认这一个键
+            return self._value
+
+    def test_default_when_missing_or_broken(self):
+        for value in (None, "", 0, -3, "abc"):
+            self.assertEqual(shots._llm_batch(self._Cfg(value)), 20, value)
+
+    def test_reads_int_and_clamps(self):
+        self.assertEqual(shots._llm_batch(self._Cfg(8)), 8)
+        self.assertEqual(shots._llm_batch(self._Cfg("8")), 8)
+        self.assertEqual(shots._llm_batch(self._Cfg(1000)), 40)   # 上限：别把一整段塞进一次调用
+        self.assertEqual(shots._llm_batch(self._Cfg(1)), 1)
