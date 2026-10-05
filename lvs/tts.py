@@ -48,6 +48,14 @@ class TTSError(LvsError, RuntimeError):
     exit_code = EXIT_FAILED
 
 
+class TrackDurationError(TTSError):
+    """整轨拼接后的实测时长与各段之和对不上 —— 缺段 / 重复段 / 静音填充。
+
+    与 `TTSError` 分开是为了**可判断**：调用方（和用户）能一眼看出这是"拼出来的东西
+    长度不对"，而不是后端合成失败。
+    """
+
+
 @dataclass
 class Boundary:
     offset: float          # 相对该镜音频起点的秒
@@ -629,6 +637,18 @@ def whisper_boundaries(
 
 # ---- 整轨拼接 --------------------------------------------------------------
 
+#: 整轨时长自检的**相对**容差（对比"各段之和"）。
+#:
+#: 为什么是 1.5%：产出是 **mp3**，LAME 帧对齐（每帧 26ms@44.1k / 24ms@48k）加上
+#: 编码器前后补零一共只有几十毫秒量级 —— 那是**正常偏差**，不该判死；
+#: 而"拼接真的丢了段 / 多拼了段"哪怕只有 1 秒，在几百秒的整轨上也有 0.2% 以上，
+#: 1.5% 的窗口既能放过帧对齐噪声，又能抓住结构化故障（`tests/test_build_sanity.py`
+#: 对两个方向都有用例）。
+CONCAT_DURATION_TOLERANCE = 0.015
+#: 容差**绝对下限**（秒）。几十秒的短片按 1.5% 只有几百毫秒，和 mp3 补零量级接近 ——
+#: 给一个下限，免得"正常的小偏差被按比例判死"。
+CONCAT_DURATION_TOLERANCE_ABS = 0.25
+
 
 def _normalize(src: Path, dst: Path) -> None:
     ffmpeg, _ = tools()
@@ -686,7 +706,56 @@ def concat_track(ws: Workspace, shots: list[dict[str, Any]], gap: float) -> Path
         ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
         "-c:a", "libmp3lame", "-b:a", "192k", "-ar", str(AUDIO_AR), str(out),
     ])
+    # ★ 拼完**自检**（票 20）：整轨长度必须 ≈ 各段之和。
+    #   缺段 / 重复段 / 静音填充在逐镜产物里都看不出来 —— 只有整轨长度会对不上，
+    #   而放它过去，后面每一镜的字幕与画面都会整体错位。
+    _verify_track_duration(out, _expected_track_duration(shots, gap))
     return out
+
+
+def _expected_track_duration(shots: list[dict[str, Any]], gap: float) -> float | None:
+    """整轨的**期望时长** = 各镜音频时长之和 + 镜间静音。
+
+    用 `audio_duration`（`lvs voice` 合成/复用时实测并写回 `shots.json` 的那个值），
+    **不重新逐个探测** —— 363 镜就是 363 个 ffprobe 进程（实测 0.21–0.59 s/次），
+    而这条时间轴本来就是照它算的（`run_command` 里 `shot["start"] / ["end"]`）。
+    任一镜没有这个字段（手改过的 shots.json）→ 返回 None：**无从判断就跳过**，
+    不拿半算出来的期望值去误报。
+    """
+    total = 0.0
+    for shot in shots:
+        try:
+            dur = float(shot.get("audio_duration") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if dur <= 0:
+            return None
+        total += dur
+    return total + gap * max(0, len(shots) - 1)
+
+
+def _verify_track_duration(path: Path, expected: float | None) -> None:
+    """比对整轨实测时长与期望时长；超容差抛 `TrackDurationError`。
+
+    探测读不到（`ff_duration` 返回 None）就跳过 —— 同 `build.final_sanity` 的取舍：
+    宁可不报，也不要因工具环境问题拦下一次好配音。
+    """
+    if expected is None or expected <= 0:
+        return
+    actual = ff_duration(path)
+    if not actual:
+        return
+    drift = abs(actual - expected)
+    tolerance = max(CONCAT_DURATION_TOLERANCE_ABS, expected * CONCAT_DURATION_TOLERANCE)
+    if drift <= tolerance:
+        return
+    pct = drift / expected * 100.0
+    raise TrackDurationError(
+        f"整轨时长对不上（{path}）：期望 {expected:.2f}s，实测 {actual:.2f}s，"
+        f"偏差 {drift:.2f}s（{pct:.1f}%，容差 {tolerance:.2f}s）—— "
+        "多半是拼接丢了段 / 多拼了段。请检查 audio/norm/ 下的逐镜 wav 与 audio/concat.txt，"
+        "再重跑：lvs voice --task <task>（必要时加 --force）。"
+    )
 
 
 # ---- 命令入口 --------------------------------------------------------------
@@ -1003,6 +1072,10 @@ def run_command(config: Config, ws: Workspace, args) -> int:  # noqa: ANN001
         narration = concat_track(ws, ok_shots, gap)
     except FFmpegError as exc:
         print(f"整轨拼接失败：{exc}")
+        return 2
+    except TrackDurationError as exc:
+        # ★ 时长自检没过 = 整轨和逐镜产物对不上，绝不能把错轨当成成品往下传（票 20）。
+        print(f"整轨自检失败：{exc}")
         return 2
 
     # ---- 字幕 ----

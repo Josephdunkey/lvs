@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -332,37 +333,53 @@ class Workspace:
         if self.manifest_path.is_file():
             self.manifest = self._read_manifest()
         else:
-            self.manifest = {
-                "version": MANIFEST_VERSION,
-                "task": self.task,
-                "created_at": _now(),
-                "stages": {},
-            }
+            self.manifest = self._empty_manifest()
             self._write_manifest()
         return self
 
     @classmethod
     def read(cls, task: str, root: Path = PROJECT_ROOT) -> "Workspace":
-        """**只读**打开：加载已存在的 `manifest.json`，但绝不创建任何目录/文件。
+        """**只读**打开：加载已存在的 `manifest.json`，但绝不创建任务目录。
 
         给 `lvs board` 这类"只看不写"的命令用 —— 它们不该因看一眼状态就凭空造出
         一个任务目录（票 23 验收项 / spec §16）。产物不存在时就保持空 manifest。
+
+        唯一例外：读到**坏清单**时会留证一份 `manifest.broken-*.json` 并记一条 runlog
+        （票 19：降级必须可见）—— 那正是**必须让人知道**的事，不算"顺手写盘"。
         """
         ws = cls(task=task, root=root)
         if ws.manifest_path.is_file():
             ws.manifest = ws._read_manifest()
         return ws
 
+    def _empty_manifest(self) -> dict[str, Any]:
+        """一张全新的空清单。读过坏清单后也用它（**不写回**，等下一次 `mark_stage` 落盘）。"""
+        return {
+            "version": MANIFEST_VERSION,
+            "task": self.task,
+            "created_at": _now(),
+            "stages": {},
+        }
+
     def _read_manifest(self) -> dict[str, Any]:
+        """读清单。**读不出来（坏 JSON / 顶层不是对象）也绝不抛**，按空清单继续。
+
+        ★ 但"降级"必须**可见**（票 19）：先**留证**再当空用。原先是静默重建成空清单 ——
+        断电写了一半的 manifest 会让断点续跑记录**无声消失**，下一轮从零重跑几百镜，
+        而用户手上没有任何线索（原文件还在，但看不出它坏过）。
+        ★ 原文件**不删不改**：它是现场；留证只是复制一份带时间戳的副本，
+        事后查"什么时候坏的、坏成什么样"要靠它。
+        """
         try:
             with open(self.manifest_path, encoding="utf-8") as fh:
                 data = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            # 清单损坏不该让整条流水线崩掉 —— 重建即可
-            return {"version": MANIFEST_VERSION, "task": self.task, "created_at": _now(), "stages": {}}
+        except (json.JSONDecodeError, OSError) as exc:
+            self._keep_broken_manifest(f"{type(exc).__name__}: {exc}")
+            return self._empty_manifest()
 
         if not isinstance(data, dict):
-            return {"version": MANIFEST_VERSION, "task": self.task, "created_at": _now(), "stages": {}}
+            self._keep_broken_manifest(f"顶层不是 JSON 对象（读到 {type(data).__name__}）")
+            return self._empty_manifest()
 
         # 不带 `version` 的老清单 = 版本 1（原始格式），行为与从前一致。
         # 若版本**高于**本代码已知的：明确提示，但不崩 ——
@@ -378,6 +395,63 @@ class Workspace:
         data.setdefault("version", seen)
         return data
 
+    def _keep_broken_manifest(self, reason: str) -> Path | None:
+        """把读不出来的清单**另存留证**并出声（票 19）；返回留证路径，失败返回 None。
+
+        - 命名 `manifest.broken-<YYYYmmdd-HHMMSS>.json`；同一秒里的第二份加序号
+          `-2` / `-3` —— `lvs status` 一次会读多个任务，也可能连续两次读到同一份坏清单，
+          **绝不允许后一次把前一份盖掉**（那样留证就白留了）；
+        - 副本内容与原文**逐字节相同**，走 `artifact.atomic_write_bytes`（与其它产物同一套原子写）；
+        - 整段**不抛**：留证与出声都是观测，不能变成新的故障点（同 `runlog` 的取舍）。
+          盘写不进去（只读盘 / 磁盘满）也照常出声，只是如实说"留证失败"。
+        """
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stem = MANIFEST_NAME.rsplit(".", 1)[0]        # manifest
+        target: Path | None = None
+        try:
+            payload = self.manifest_path.read_bytes()
+            for n in range(1, 1000):
+                suffix = "" if n == 1 else f"-{n}"
+                candidate = self.dir / f"{stem}.broken-{stamp}{suffix}.json"
+                if not candidate.exists():
+                    target = candidate
+                    break
+            if target is not None:
+                artifact.atomic_write_bytes(target, payload)
+        except OSError:
+            # 原文件读不到（权限）或副本写不下 —— 出声即可，不能拦流水线
+            target = None
+
+        shown = target.name if target is not None else "（留证失败：盘上写不进去）"
+        try:
+            print(
+                f"⚠ {MANIFEST_NAME} 读不出来（{reason}），已留证为 {shown}，本轮按空清单继续 —— "
+                f"断点续跑记录可能已丢，建议先 `lvs status --task {self.task}` 看一眼再重跑受影响的阶段。",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001
+            # 控制台编码不认识 ⚠ / stderr 已被关掉（GUI 打包）—— 出声失败也算观测失败，
+            # 绝不能因此把"清单读不出来"升级成"整个命令崩掉"（票 19 的硬约束）。
+            pass
+        self._log_broken_manifest(reason, target)
+        return target
+
+    def _log_broken_manifest(self, reason: str, target: Path | None) -> None:
+        """把"清单降级成空"记进 runlog（票 19 第 3 条），供事后追查。
+
+        观测失败一律吞掉 —— `runlog` 自己就是这个取舍（见 `lvs/runlog.py` 头注释）。
+        局部导入是为了不在这里固化 `workspace` → `runlog` 的模块级依赖。
+        """
+        try:
+            from lvs import runlog
+
+            runlog.event(
+                self, "workspace", "manifest_broken",
+                reason=reason, evidence=target.name if target is not None else "",
+            )
+        except Exception:  # noqa: BLE001 - 记日志失败不许影响主流程
+            pass
+
     def manifest_version(self) -> int:
         """本任务清单的结构版本（老清单无字段时按 1 计）。"""
         return artifact.safe_int(self.manifest.get("version") or 1, 1)
@@ -387,8 +461,9 @@ class Workspace:
 
         ★ 为什么必须原子：`write_text` 是「先截断、再写」—— 在截断与写完之间
         （进程被 Ctrl-C / 断电 / 崩溃），盘上留下的是一个**被截断的 JSON**。
-        而 `_read_manifest` 遇到坏 JSON 会**静默重建成空**（`stages: {}`）——
-        于是**断点续跑的全部记录被无声丢弃**，下次从零重跑几百镜。
+        而 `_read_manifest` 遇到坏 JSON 只能**重建成空**（`stages: {}`）——
+        于是**断点续跑的全部记录还是要重跑一遍**（票 19 起至少会留证 + 出声，
+        但留证只能事后追查，救不回记录本身）。
 
         这个窗口在串行下只是小概率（刚好撞上写盘那一刻），但**每镜写一次**
         （654 镜 = 654 次整文件重写）把它放大；将来若并行，会变成必然。

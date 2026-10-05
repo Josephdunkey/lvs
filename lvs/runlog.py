@@ -24,6 +24,7 @@
 | `stage_start` / `stage_end` | 阶段进出（带耗时与退出码） |
 | `shot_ok` / `shot_fail` / `shot_skip` | 逐镜结果（带镜号与原因） |
 | `breaker_tripped` | 熔断触发（带连续失败数与停在第几镜） |
+| `manifest_broken` | 清单读不出来（已留证为 `manifest.broken-*.json`，本轮按空清单继续，票 19） |
 """
 
 from __future__ import annotations
